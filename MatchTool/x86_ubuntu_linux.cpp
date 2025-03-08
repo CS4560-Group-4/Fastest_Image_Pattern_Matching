@@ -1,4 +1,6 @@
 #include <emmintrin.h> // SSE2 intrinsics
+#include <stdint.h>
+
 
 inline int32_t hsum_epi32_sse2(__m128i x) {
     __m128i hi64 = _mm_unpackhi_epi64(x, x);
