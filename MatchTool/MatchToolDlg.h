@@ -233,8 +233,6 @@ public:
 	cv::Mat m_matSrc;
 	cv::Mat m_matDst;
 	BOOL m_bDebugMode;
-	int m_iScaleTimes;
-	BOOL bInitial;
 	bool m_bStopLayer1;//FastMode
 	BOOL ckSIMD;
 	BOOL bSubPixelEstimation;
@@ -252,10 +250,12 @@ public:
 	
 	BOOL Match ();
 	void LearnPattern ();
+
+	BOOL m_ckBitwiseNot;
+	BOOL m_bSubPixel;
+	BOOL m_ckSIMD;
 	
 private:
-	double m_dSrcScale;
-	double m_dDstScale;
 	s_TemplData m_TemplData;
 	int GetTopLayer (Mat* matTempl, int iMinDstLength);
 	void MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD);
@@ -268,7 +268,6 @@ private:
 	Point GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double& dMaxValue, double dMaxOverlap);
 	Point GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double& dMaxValue, double dMaxOverlap, s_BlockMax& blockMax);
 	void SortPtWithCenter (vector<Point2f>& vecSort);
-	BOOL m_bShowResult;
 };
 
 // =============================================================================
@@ -300,13 +299,40 @@ private:
 // CMatchToolDlg 對話方塊
 bool compareScoreBig2Small (const s_MatchParameter& lhs, const s_MatchParameter& rhs) { return  lhs.dMatchScore > rhs.dMatchScore; }
 bool comparePtWithAngle (const pair<Point2f, double> lhs, const pair<Point2f, double> rhs) { return lhs.second < rhs.second; }
+bool compareMatchResultByPos (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs)
+{
+	double dTol = 2;
+	if (fabs (lhs.ptCenter.y - rhs.ptCenter.y) <= dTol)
+		return lhs.ptCenter.x < rhs.ptCenter.x;
+	else
+		return lhs.ptCenter.y < rhs.ptCenter.y;
+
+};
+bool compareMatchResultByScore (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.dMatchScore > rhs.dMatchScore; }
+bool compareMatchResultByPosX (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.ptCenter.x < rhs.ptCenter.x; }
 
 
-CMatchToolDlg::CMatchToolDlg() :
-	  m_iMaxPos (10)
-	, m_dMaxOverlap (0.1)
+void MouseCall (int event, int x, int y, int flag, void* pUserData);
+const Scalar colorWaterBlue (230, 255, 102);
+const Scalar colorBlue (255, 0, 0);
+const Scalar colorYellow (0, 255, 255);
+const Scalar colorRed (0, 0, 255);
+const Scalar colorBlack (0, 0, 0);
+const Scalar colorGray (200, 200, 200);
+const Scalar colorSystem (240, 240, 240);
+const Scalar colorGreen (0, 255, 0);
+const Scalar colorWhite (255, 255, 255);
+const Scalar colorPurple (214, 112, 218);
+const Scalar colorGoldenrod (15, 185, 255);
+
+
+//ctor
+CMatchToolDlg::CMatchToolDlg()
+	: 
+	  m_iMaxPos (70)
+	, m_dMaxOverlap (0)
 	, m_dScore (0.8)
-	, m_dToleranceAngle (180)
+	, m_dToleranceAngle (0)
 	, m_iMinReduceArea (256)
 	, m_bDebugMode (FALSE)
 	, m_dTolerance1 (40)
@@ -314,17 +340,9 @@ CMatchToolDlg::CMatchToolDlg() :
 	, m_dTolerance3 (-110)
 	, m_dTolerance4 (-100)
 	, m_bStopLayer1(false)
-	, ckSIMD(TRUE)
-	, bSubPixelEstimation(FALSE)
+	, m_bToleranceRange(FALSE)
 {
-	m_dDstScale = 1;
-	m_dSrcScale = 1;
-	m_iScaleTimes = 0;
-	m_bShowResult = FALSE;
-	bInitial = FALSE;
-	m_bToleranceRange = TRUE;
 }
-
 
 void CMatchToolDlg::LearnPattern ()
 {
@@ -365,7 +383,6 @@ void CMatchToolDlg::LearnPattern ()
 	templData->bIsPatternLearned = TRUE;
 }
 
-
 int CMatchToolDlg::GetTopLayer (Mat* matTempl, int iMinDstLength)
 {
 	int iTopLayer = 0;
@@ -379,6 +396,8 @@ int CMatchToolDlg::GetTopLayer (Mat* matTempl, int iMinDstLength)
 	return iTopLayer;
 }
 
+
+
 //OCR
 bool comparePosWithY (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs) { return lhs.first.y < rhs.first.y; }
 bool comparePosWithX (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs){return lhs.first.x < rhs.first.x;}
@@ -386,7 +405,6 @@ bool comparePosWithX (const pair<Point2d, char>& lhs, const pair<Point2d, char>&
 
 BOOL CMatchToolDlg::Match ()
 {
-	printf("1\n");
 	if (m_matSrc.empty () || m_matDst.empty ())
 		return FALSE;
 	if ((m_matDst.cols < m_matSrc.cols && m_matDst.rows > m_matSrc.rows) || (m_matDst.cols > m_matSrc.cols && m_matDst.rows < m_matSrc.rows))
@@ -395,19 +413,17 @@ BOOL CMatchToolDlg::Match ()
 		return FALSE;
 	if (!m_TemplData.bIsPatternLearned)
 		return FALSE;
-
-	printf("1\n");
 	double d1 = clock ();
 	//決定金字塔層數 總共為1 + iLayer層
 	int iTopLayer = GetTopLayer (&m_matDst, (int)sqrt ((double)m_iMinReduceArea));
 	//建立金字塔
 	vector<Mat> vecMatSrcPyr;
-
-	BOOL ckBitwiseNot = FALSE;
-	if (ckBitwiseNot)
+	if (m_ckBitwiseNot)
 	{
 		Mat matNewSrc = 255 - m_matSrc;
 		buildPyramid (matNewSrc, vecMatSrcPyr, iTopLayer);
+		imshow ("1", matNewSrc);
+		moveWindow ("1", 0, 0);
 	}
 	else
 		buildPyramid (m_matSrc, vecMatSrcPyr, iTopLayer);
@@ -445,9 +461,8 @@ BOOL CMatchToolDlg::Match ()
 
 	int iTopSrcW = vecMatSrcPyr[iTopLayer].cols, iTopSrcH = vecMatSrcPyr[iTopLayer].rows;
 	Point2f ptCenter ((iTopSrcW - 1) / 2.0f, (iTopSrcH - 1) / 2.0f);
-	
+
 	int iSize = (int)vecAngles.size ();
-	printf("SIZE:3 %d\n", iSize);
 	//vector<s_MatchParameter> vecMatchParameter (iSize * (m_iMaxPos + MATCH_CANDIDATE_NUM));
 	vector<s_MatchParameter> vecMatchParameter;
 	//Caculate lowest score at every layer
@@ -505,19 +520,19 @@ BOOL CMatchToolDlg::Match ()
 		}
 	}
 	sort (vecMatchParameter.begin (), vecMatchParameter.end (), compareScoreBig2Small);
-	printf("2\n");
 
 	
 	int iMatchSize = (int)vecMatchParameter.size ();
 	int iDstW = pTemplData->vecPyramid[iTopLayer].cols, iDstH = pTemplData->vecPyramid[iTopLayer].rows;
 
 	//顯示第一層結果
-	if (true)
+	if (m_bDebugMode)
 	{
-		int iDebugScale = 10;
+		int iDebugScale = 2;
 
-		Mat matResize;
+		Mat matShow, matResize;
 		resize (vecMatSrcPyr[iTopLayer], matResize, vecMatSrcPyr[iTopLayer].size () * iDebugScale);
+		cvtColor (matResize, matShow, CV_GRAY2BGR);
 		string str = format ("Toplayer, Candidate:%d", iMatchSize);
 		vector<Point2f> vec;
 		for (int i = 0; i < iMatchSize; i++)
@@ -528,29 +543,29 @@ BOOL CMatchToolDlg::Match ()
 			ptRT = Point2f (ptLT.x + iDstW * (float)cos (dRAngle), ptLT.y - iDstW * (float)sin (dRAngle));
 			ptLB = Point2f (ptLT.x + iDstH * (float)sin (dRAngle), ptLT.y + iDstH * (float)cos (dRAngle));
 			ptRB = Point2f (ptRT.x + iDstH * (float)sin (dRAngle), ptRT.y + iDstH * (float)cos (dRAngle));
-			line (matResize, ptLT * iDebugScale, ptLB * iDebugScale, Scalar (0, 255, 0));
-			line (matResize, ptLB * iDebugScale, ptRB * iDebugScale, Scalar (0, 255, 0));
-			line (matResize, ptRB * iDebugScale, ptRT * iDebugScale, Scalar (0, 255, 0));
-			line (matResize, ptRT * iDebugScale, ptLT * iDebugScale, Scalar (0, 255, 0));
-			circle (matResize, ptLT * iDebugScale, 1, Scalar (0, 0, 255));
+			line (matShow, ptLT * iDebugScale, ptLB * iDebugScale, Scalar (0, 255, 0));
+			line (matShow, ptLB * iDebugScale, ptRB * iDebugScale, Scalar (0, 255, 0));
+			line (matShow, ptRB * iDebugScale, ptRT * iDebugScale, Scalar (0, 255, 0));
+			line (matShow, ptRT * iDebugScale, ptLT * iDebugScale, Scalar (0, 255, 0));
+			circle (matShow, ptLT * iDebugScale, 1, Scalar (0, 0, 255));
 			vec.push_back (ptLT* iDebugScale);
 			vec.push_back (ptRT* iDebugScale);
 			vec.push_back (ptLB* iDebugScale);
 			vec.push_back (ptRB* iDebugScale);
 
 			string strText = format ("%d", i);
-			putText (matResize, strText, ptLT *iDebugScale, FONT_HERSHEY_PLAIN, 1, Scalar (0, 255, 0));
+			putText (matShow, strText, ptLT *iDebugScale, FONT_HERSHEY_PLAIN, 1, Scalar (0, 255, 0));
 		}
 		cvNamedWindow (str.c_str (), 0x10000000);
 		Rect rectShow = boundingRect (vec);
-		imshow (str, matResize);// (rectShow));
-		moveWindow (str, 0, 0);
+		imshow (str, matShow);// (rectShow));
 		waitKey(0);
+		//moveWindow (str, 0, 0);
 	}
 	//顯示第一層結果
-	printf("2\n SIZE:2 %ld\n", vecMatchParameter.size ());
 
 	//第一階段結束
+	BOOL bSubPixelEstimation = m_bSubPixel;
 	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
 	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 	vector<s_MatchParameter> vecAllResult;
@@ -666,7 +681,6 @@ BOOL CMatchToolDlg::Match ()
 		}
 	}
 	FilterWithScore (&vecAllResult, m_dScore);
-	printf("3\n");
 
 	//最後濾掉重疊
 	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
@@ -691,13 +705,9 @@ BOOL CMatchToolDlg::Match ()
 	
 	m_vecSingleTargetData.clear ();
 	iMatchSize = (int)vecAllResult.size ();
-	printf("4\n");
-
-
 	if (vecAllResult.size () == 0)
 		return FALSE;
 	int iW = pTemplData->vecPyramid[0].cols, iH = pTemplData->vecPyramid[0].rows;
-	printf("5\n");
 
 	for (int i = 0; i < iMatchSize; i++)
 	{
@@ -734,14 +744,10 @@ BOOL CMatchToolDlg::Match ()
 		if (i + 1 == m_iMaxPos)
 			break;
 	}
-	// sort (m_vecSingleTargetData.begin (), m_vecSingleTargetData.end (), compareMatchResultByPosX);
-	m_bShowResult = TRUE;
-	printf("5 %ld\n", m_vecSingleTargetData.size ());
-
-
+	//sort (m_vecSingleTargetData.begin (), m_vecSingleTargetData.end (), compareMatchResultByPosX);
+	
 	return (int)m_vecSingleTargetData.size ();
 }
-
 BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNewX, double* dNewY, double* dNewAngle, double dAngleStep, int iMaxScoreIndex)
 {
 	//Az=S, (A.T)Az=(A.T)s, z = ((A.T)A).inv (A.T)s
@@ -816,7 +822,6 @@ BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNew
 	return TRUE;
 }
 
-
 //From ImageShop
 // 4個有符號的32位的數據相加的和。
 inline int _mm_hsum_epi32 (__m128i V)      // V3 V2 V1 V0
@@ -857,7 +862,7 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
-	if (ckSIMD && bUseSIMD)
+	if (m_ckSIMD && bUseSIMD)
 	{
 		//From ImageShop
 		matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,

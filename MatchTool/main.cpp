@@ -3,7 +3,8 @@
 
 int main() {
     std::string src_path = "../Test Images/Src1.bmp";
-    cv::Mat src = cv::imread(src_path, IMREAD_COLOR);
+    // Very important to read the image in GRAYSCALE!
+    cv::Mat src = cv::imread(src_path, IMREAD_GRAYSCALE);
     if(src.empty())
     {
         std::cout << "Could not read the image: " << src_path << std::endl;
@@ -11,16 +12,18 @@ int main() {
     }
  
     std::string dst_path = "../Test Images/Dst1.bmp";
-    cv::Mat dst = cv::imread(dst_path, IMREAD_COLOR);
+    cv::Mat dst = cv::imread(dst_path, IMREAD_GRAYSCALE);
     if(dst.empty())
     {
         std::cout << "Could not read the image: " << dst_path << std::endl;
         return 1;
     }
-    
 
 
     CMatchToolDlg* matcher = new CMatchToolDlg();
+
+    matcher->m_iMaxPos = 10;
+    matcher->m_dToleranceAngle = 180;
 
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
@@ -31,9 +34,16 @@ int main() {
     printf("RESULT: %d\n", result);
     printf("Rows cols: %d %d\n", src.rows, src.cols);
 
+    cvtColor (src, src, CV_GRAY2BGR);
     for(int i = 0; i < matcher->m_vecSingleTargetData.size(); i++) {
         auto data = matcher->m_vecSingleTargetData.at(i);
-        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) %f %f\n", data.ptLT.x, data.ptLT.y,data.ptRT.x, data.ptRT.y,data.ptRB.x, data.ptRB.y, data.ptLB.x, data.ptLB.y, data.dMatchedAngle, data.dMatchScore);
+        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) %f %f\n",
+            data.ptLT.x, data.ptLT.y, 
+            data.ptRT.x, data.ptRT.y, 
+            data.ptRB.x, data.ptRB.y,
+            data.ptLB.x, data.ptLB.y,
+            data.dMatchedAngle, data.dMatchScore
+        );
         
         vector<Point> contour;
         contour.push_back(data.ptLT);
