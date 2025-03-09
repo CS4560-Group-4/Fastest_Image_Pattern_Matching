@@ -2,7 +2,7 @@
 #include <iostream>
 
 int main() {
-    std::string src_path = "../Test Images/Src1.bmp";
+    std::string src_path = "./Test Images/Src1.bmp";
     // Very important to read the image in GRAYSCALE!
     cv::Mat src = cv::imread(src_path, IMREAD_GRAYSCALE);
     if(src.empty())
@@ -11,7 +11,7 @@ int main() {
         return 1;
     }
  
-    std::string dst_path = "../Test Images/Dst1.bmp";
+    std::string dst_path = "./Test Images/Dst1.bmp";
     cv::Mat dst = cv::imread(dst_path, IMREAD_GRAYSCALE);
     if(dst.empty())
     {
@@ -31,13 +31,12 @@ int main() {
     matcher->LearnPattern();
     BOOL result = matcher->Match();
     
-    printf("RESULT: %d\n", result);
-    printf("Rows cols: %d %d\n", src.rows, src.cols);
 
     cvtColor (src, src, CV_GRAY2BGR);
+    printf("Matches:\n");
     for(int i = 0; i < matcher->m_vecSingleTargetData.size(); i++) {
         auto data = matcher->m_vecSingleTargetData.at(i);
-        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) %f %f\n",
+        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) Angle: %f  Score: %f\n",
             data.ptLT.x, data.ptLT.y, 
             data.ptRT.x, data.ptRT.y, 
             data.ptRB.x, data.ptRB.y,
@@ -54,6 +53,9 @@ int main() {
         const Point *pts = (const cv::Point*) cv::Mat(contour).data;
         int npts = Mat(contour).rows;
         cv::polylines(src, &pts, &npts, 1, true, CV_RGB(0,255,0), 5);
+        
+		string str = format ("%d", i);
+        putText(src, str, data.ptCenter, FONT_HERSHEY_COMPLEX, 1,CV_RGB(0,255,0), 2);
     }
 
     cv::imshow("Output", src);
