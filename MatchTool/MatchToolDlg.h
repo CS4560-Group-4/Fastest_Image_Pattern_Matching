@@ -5,6 +5,11 @@
 #include <opencv2/highgui/highgui_c.h>
 #include <opencv2/imgproc/imgproc_c.h>
 #include <opencv2/imgproc/types_c.h>
+
+#include <thread>
+
+#include<omp.h>
+
 using namespace cv;
 using namespace std;
 #pragma once
@@ -129,16 +134,18 @@ struct s_BlockMax
 		}
 
 		vecBlock.resize (iCol * iRow);
-		int iCount = 0;
+		// int iCount = 0;
+		// #pragma omp parallel for                                // Doesn't do much
 		for (int y = 0; y < iRow ; y++)
 		{
 			for (int x = 0; x < iCol; x++)
 			{
+				int iCount = y * iCol + x;
 				Rect rectBlock (x * iBlockW, y * iBlockH, iBlockW, iBlockH);
 				vecBlock[iCount].rect = rectBlock;
 				minMaxLoc (matSrc (rectBlock), 0, &vecBlock[iCount].dMax, 0, &vecBlock[iCount].ptMaxLoc);
 				vecBlock[iCount].ptMaxLoc += rectBlock.tl ();
-				iCount++;
+				// iCount++;
 			}
 		}
 		if (bHResidue && bVResidue)
@@ -472,8 +479,11 @@ BOOL CMatchToolDlg::Match ()
 
 	Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
 	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
+
+	#pragma omp parallel for 
 	for (int i = 0; i < iSize; i++)
-	{
+	{	
+		std::cout<<omp_get_thread_num()<<std::endl;
 		Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
 		Mat matResult;
 		Point ptMaxLoc;
@@ -495,13 +505,19 @@ BOOL CMatchToolDlg::Match ()
 			blockMax.GetMaxValueLoc (dMaxVal, ptMaxLoc);
 			if (dMaxVal < vecLayerScore[iTopLayer])
 				continue;
+			#pragma omp critical
+			{
 			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			}
 			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 			{
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap, blockMax);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
-				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				#pragma omp critical
+				{				
+					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				}
 			}
 		}
 		else
@@ -509,13 +525,19 @@ BOOL CMatchToolDlg::Match ()
 			minMaxLoc (matResult, 0, &dMaxVal, 0, &ptMaxLoc);
 			if (dMaxVal < vecLayerScore[iTopLayer])
 				continue;
+			#pragma omp critical
+			{
 			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			}
 			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 			{
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
+				#pragma omp critical
+				{
 				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				}
 			}
 		}
 	}
@@ -569,6 +591,9 @@ BOOL CMatchToolDlg::Match ()
 	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
 	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 	vector<s_MatchParameter> vecAllResult;
+
+
+	#pragma omp parallel for
 	for (int i = 0; i < (int)vecMatchParameter.size (); i++)
 	//for (int i = 0; i < iSearchSize; i++)
 	{
@@ -582,7 +607,10 @@ BOOL CMatchToolDlg::Match ()
 		if (iTopLayer <= iStopLayer)
 		{
 			vecMatchParameter[i].pt = Point2d (ptLT * ((iTopLayer == 0) ? 1 : 2));
-			vecAllResult.push_back (vecMatchParameter[i]);
+			#pragma omp critical
+			{
+			vecAllResult.push_back (vecMatchParameter[i]);                                                    // PROBLEM FOR OPTIMIZATION
+			}
 		}
 		else
 		{
@@ -596,14 +624,14 @@ BOOL CMatchToolDlg::Match ()
 				if (m_bToleranceRange)
 				{
 					for (int i = -1; i <= 1; i++)
-						vecAngles.push_back (dMatchedAngle + dAngleStep * i);
+						vecAngles.push_back (dMatchedAngle + dAngleStep * i);                                
 				}
 				else
 				{
 					if (m_dToleranceAngle < VISION_TOLERANCE)
 						vecAngles.push_back (0.0);
 					else
-						for (int i = -1; i <= 1; i++)
+						for (int i = -1; i <= 1; i++)														// DAFUQ WHY USE i????
 							vecAngles.push_back (dMatchedAngle + dAngleStep * i);
 				}
 				Point2f ptSrcCenter ((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
@@ -666,7 +694,10 @@ BOOL CMatchToolDlg::Match ()
 				if (iLayer == iStopLayer)
 				{
 					vecNewMatchParameter[iMaxScoreIndex].pt = pt * (iStopLayer == 0 ? 1 : 2);
-					vecAllResult.push_back (vecNewMatchParameter[iMaxScoreIndex]);
+					#pragma omp critical
+					{
+					vecAllResult.push_back (vecNewMatchParameter[iMaxScoreIndex]);                                       // PROBLEM FOR OPTIMIZATION
+					}
 				}
 				else
 				{
@@ -686,7 +717,8 @@ BOOL CMatchToolDlg::Match ()
 	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
 	iDstH = pTemplData->vecPyramid[iStopLayer].rows * (iStopLayer == 0 ? 1 : 2);
 
-	for (int i = 0; i < (int)vecAllResult.size (); i++)
+	#pragma omp parallel for
+	for (int i = 0; i < (int)vecAllResult.size (); i++)                      //=============CAN OPTIMIZE===========================
 	{
 		Point2f ptLT, ptRT, ptRB, ptLB;
 		double dRAngle = -vecAllResult[i].dMatchAngle * D2R;
@@ -709,7 +741,8 @@ BOOL CMatchToolDlg::Match ()
 		return FALSE;
 	int iW = pTemplData->vecPyramid[0].cols, iH = pTemplData->vecPyramid[0].rows;
 
-	for (int i = 0; i < iMatchSize; i++)
+	#pragma omp parallel for                                                                 // Doesn't do much
+	for (int i = 0; i < min(iMatchSize, m_iMaxPos); i++)                                    
 	{
 		s_SingleTargetMatch sstm;
 		double dRAngle = -vecAllResult[i].dMatchAngle * D2R;
@@ -727,8 +760,11 @@ BOOL CMatchToolDlg::Match ()
 			sstm.dMatchedAngle += 360;
 		if (sstm.dMatchedAngle > 180)
 			sstm.dMatchedAngle -= 360;
+		
+		#pragma omp critical
+		{
 		m_vecSingleTargetData.push_back (sstm);
-
+		}
 		
 
 		//Test Subpixel
@@ -741,8 +777,8 @@ BOOL CMatchToolDlg::Match ()
 		AfxMessageBox (strDiff);*/
 		//Test Subpixel
 		//存出MATCH ROI
-		if (i + 1 == m_iMaxPos)
-			break;
+		// if (i + 1 == m_iMaxPos)
+		// 	break;
 	}
 	//sort (m_vecSingleTargetData.begin (), m_vecSingleTargetData.end (), compareMatchResultByPosX);
 	

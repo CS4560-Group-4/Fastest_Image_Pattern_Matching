@@ -1,5 +1,7 @@
 #include "MatchToolDlg.h"
 #include <iostream>
+#include <omp.h>
+
 
 int main(int argc, char** argv) {
 
@@ -29,27 +31,29 @@ int main(int argc, char** argv) {
 
     CMatchToolDlg* matcher = new CMatchToolDlg();
 
-    matcher->m_iMaxPos = 10;
+    matcher->m_iMaxPos = 300;
     matcher->m_dToleranceAngle = 180;
 
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
-    
+
+    double start = omp_get_wtime();
     matcher->LearnPattern();
     BOOL result = matcher->Match();
-    
+    double end = omp_get_wtime();
+    std::cout << "Time: " << end - start << std::endl;
 
     cvtColor (src, src, CV_GRAY2BGR);
     printf("Matches:\n");
     for(int i = 0; i < matcher->m_vecSingleTargetData.size(); i++) {
         auto data = matcher->m_vecSingleTargetData.at(i);
-        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) Angle: %f  Score: %f\n",
-            data.ptLT.x, data.ptLT.y, 
-            data.ptRT.x, data.ptRT.y, 
-            data.ptRB.x, data.ptRB.y,
-            data.ptLB.x, data.ptLB.y,
-            data.dMatchedAngle, data.dMatchScore
-        );
+        // printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) Angle: %f  Score: %f\n",
+        //     data.ptLT.x, data.ptLT.y, 
+        //     data.ptRT.x, data.ptRT.y, 
+        //     data.ptRB.x, data.ptRB.y,
+        //     data.ptLB.x, data.ptLB.y,
+        //     data.dMatchedAngle, data.dMatchScore
+        // );
         
         vector<Point> contour;
         contour.push_back(data.ptLT);
