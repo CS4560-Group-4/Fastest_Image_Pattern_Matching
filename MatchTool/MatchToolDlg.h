@@ -8,7 +8,7 @@
 
 #include <thread>
 
-#include<omp.h>
+#include <omp.h>
 
 using namespace cv;
 using namespace std;
@@ -135,7 +135,7 @@ struct s_BlockMax
 
 		vecBlock.resize (iCol * iRow);
 		// int iCount = 0;
-		// #pragma omp parallel for                                // Doesn't do much
+		// #pragma omp parallel for                                // NOTE:  Doesn't do anything because it is already in a parallel for loop
 		for (int y = 0; y < iRow ; y++)
 		{
 			for (int x = 0; x < iCol; x++)
@@ -362,6 +362,7 @@ void CMatchToolDlg::LearnPattern ()
 	int iSize = templData->vecPyramid.size ();
 	templData->resize (iSize);
 
+	// #pragma omp parallel for                                                // NOTE: Not worth it since the loop is small and the overhead of parallelization is larger than the loop itself
 	for (int i = 0; i < iSize; i++)
 	{
 		double invArea = 1. / ((double)templData->vecPyramid[i].rows * templData->vecPyramid[i].cols);
@@ -474,16 +475,18 @@ BOOL CMatchToolDlg::Match ()
 	vector<s_MatchParameter> vecMatchParameter;
 	//Caculate lowest score at every layer
 	vector<double> vecLayerScore (iTopLayer + 1, m_dScore);
+
+	// TODO: Try parallelization
 	for (int iLayer = 1; iLayer <= iTopLayer; iLayer++)
 		vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
 
 	Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
 	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
 
-	#pragma omp parallel for 
+	#pragma omp parallel for
 	for (int i = 0; i < iSize; i++)
 	{	
-		std::cout<<omp_get_thread_num()<<std::endl;
+		// std::cout<<omp_get_thread_num()<<std::endl;
 		Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
 		Mat matResult;
 		Point ptMaxLoc;
@@ -514,7 +517,7 @@ BOOL CMatchToolDlg::Match ()
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap, blockMax);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
-				#pragma omp critical
+				#pragma omp critical                            // NOTE: Slightly better performance here than around for loop
 				{				
 					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
 				}
@@ -548,7 +551,7 @@ BOOL CMatchToolDlg::Match ()
 	int iDstW = pTemplData->vecPyramid[iTopLayer].cols, iDstH = pTemplData->vecPyramid[iTopLayer].rows;
 
 	//顯示第一層結果
-	if (m_bDebugMode)
+	if (m_bDebugMode)               // NOTE: Happens only in debug mode
 	{
 		int iDebugScale = 2;
 
@@ -557,7 +560,7 @@ BOOL CMatchToolDlg::Match ()
 		cvtColor (matResize, matShow, CV_GRAY2BGR);
 		string str = format ("Toplayer, Candidate:%d", iMatchSize);
 		vector<Point2f> vec;
-		for (int i = 0; i < iMatchSize; i++)
+		for (int i = 0; i < iMatchSize; i++)                    // TODO: Can maybe be parallelized; possibly with sections
 		{
 			Point2f ptLT, ptRT, ptRB, ptLB;
 			double dRAngle = -vecMatchParameter[i].dMatchAngle * D2R;
@@ -631,7 +634,7 @@ BOOL CMatchToolDlg::Match ()
 					if (m_dToleranceAngle < VISION_TOLERANCE)
 						vecAngles.push_back (0.0);
 					else
-						for (int i = -1; i <= 1; i++)														// DAFUQ WHY USE i????
+						for (int i = -1; i <= 1; i++)
 							vecAngles.push_back (dMatchedAngle + dAngleStep * i);
 				}
 				Point2f ptSrcCenter ((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
@@ -717,8 +720,8 @@ BOOL CMatchToolDlg::Match ()
 	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
 	iDstH = pTemplData->vecPyramid[iStopLayer].rows * (iStopLayer == 0 ? 1 : 2);
 
-	#pragma omp parallel for
-	for (int i = 0; i < (int)vecAllResult.size (); i++)                      //=============CAN OPTIMIZE===========================
+	// #pragma omp parallel for                                    // Note: Does not seem to improved or worsen performance
+	for (int i = 0; i < (int)vecAllResult.size (); i++)
 	{
 		Point2f ptLT, ptRT, ptRB, ptLB;
 		double dRAngle = -vecAllResult[i].dMatchAngle * D2R;
@@ -907,16 +910,17 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
 
 		int  t_r_end = matTemplate.rows, t_r = 0;
-		for (int r = 0; r < matResult.rows; r++)
+		// #pragma omp simd                                     // NOTE: Doesn't do much
+		for (int r = 0; r < matResult.rows; r++)                                // TODO: Parallelize this instead of bigger for loop
 		{
 			float* r_matResult = matResult.ptr<float> (r);
 			uchar* r_source = matSrc.ptr<uchar> (r);
 			uchar* r_template, *r_sub_source;
-			for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)
+			for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)              // NOTE: Cannot be put here
 			{
 				r_template = matTemplate.ptr<uchar> ();
 				r_sub_source = r_source;
-				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
+				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols) // NOTE: Cannot be put here
 				{
 					*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
 				}
@@ -982,12 +986,13 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 	//
 
 	int i, j;
+	// # pragma omp simd                                             // NOTE: Doesn't do much
 	for (i = 0; i < matResult.rows; i++)
 	{
 		float* rrow = matResult.ptr<float> (i);
 		int idx = i * sumstep;
 		int idx2 = i * sqstep;
-
+		// # pragma omp simd linear(idx, idx2)                    // NOTE: If idx and idx2 are moved inside the loop, it leads to a signficant performance drop
 		for (j = 0; j < matResult.cols; j += 1, idx += 1, idx2 += 1)
 		{
 			double num = rrow[j], t;
@@ -1120,6 +1125,9 @@ void CMatchToolDlg::FilterWithRotatedRect (vector<s_MatchParameter>* vec, int iM
 {
 	int iMatchSize = (int)vec->size ();
 	RotatedRect rect1, rect2;
+
+	                                    // NOTE: good performance increase ~ 0.1 second consistently
+	#pragma omp parallel for 			// TODO: Check if safe and maybe do a collapse
 	for (int i = 0; i < iMatchSize - 1; i++)
 	{
 		if (vec->at (i).bDelete)
