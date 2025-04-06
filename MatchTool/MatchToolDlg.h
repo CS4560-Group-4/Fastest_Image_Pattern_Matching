@@ -18,6 +18,8 @@ using namespace std;
 #define FALSE 0
 #define TRUE 1
 
+#define NUM_THREADS 16
+
 
 struct s_TemplData
 {
@@ -422,9 +424,9 @@ BOOL CMatchToolDlg::Match ()
 	if (!m_TemplData.bIsPatternLearned)
 		return FALSE;
 	double d1 = clock ();
-	//決定金字塔層數 總共為1 + iLayer層
+	//Determine the number of pyramid layers, the total is 1 + iLayer layer
 	int iTopLayer = GetTopLayer (&m_matDst, (int)sqrt ((double)m_iMinReduceArea));
-	//建立金字塔
+	//Build a pyramid
 	vector<Mat> vecMatSrcPyr;
 	if (m_ckBitwiseNot)
 	{
@@ -438,7 +440,7 @@ BOOL CMatchToolDlg::Match ()
 
 	s_TemplData* pTemplData = &m_TemplData;
 
-	//第一階段以最頂層找出大致角度與ROI
+	//The first stage uses the top layer to find the approximate angle and ROI
 	double dAngleStep = atan (2.0 / max (pTemplData->vecPyramid[iTopLayer].cols, pTemplData->vecPyramid[iTopLayer].rows)) * R2D;
 
 	vector<double> vecAngles;
@@ -471,12 +473,10 @@ BOOL CMatchToolDlg::Match ()
 	Point2f ptCenter ((iTopSrcW - 1) / 2.0f, (iTopSrcH - 1) / 2.0f);
 
 	int iSize = (int)vecAngles.size ();
-	//vector<s_MatchParameter> vecMatchParameter (iSize * (m_iMaxPos + MATCH_CANDIDATE_NUM));
 	vector<s_MatchParameter> vecMatchParameter;
 	//Caculate lowest score at every layer
 	vector<double> vecLayerScore (iTopLayer + 1, m_dScore);
-
-	// TODO: Try parallelization
+	// The score for each layer gets progressivelly smaller
 	for (int iLayer = 1; iLayer <= iTopLayer; iLayer++)
 		vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
 
@@ -491,7 +491,6 @@ BOOL CMatchToolDlg::Match ()
 		Mat matResult;
 		Point ptMaxLoc;
 		double dValue, dMaxVal;
-		double dRotate = clock ();
 		Size sizeBest = GetBestRotationSize (vecMatSrcPyr[iTopLayer].size (), pTemplData->vecPyramid[iTopLayer].size (), vecAngles[i]);
 
 		float fTranslationX = (sizeBest.width - 1) / 2.0f - ptCenter.x;
@@ -510,13 +509,15 @@ BOOL CMatchToolDlg::Match ()
 				continue;
 			#pragma omp critical
 			{
-			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
 			}
+
 			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 			{
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap, blockMax);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
+
 				#pragma omp critical                            // NOTE: Slightly better performance here than around for loop
 				{				
 					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
@@ -589,41 +590,47 @@ BOOL CMatchToolDlg::Match ()
 	}
 	//顯示第一層結果
 
-	//第一階段結束
+	//End of the first stage
+
 	BOOL bSubPixelEstimation = m_bSubPixel;
-	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
-	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
-	vector<s_MatchParameter> vecAllResult;
-
-
-	#pragma omp parallel for
+	//When set to 1: rough matching, sacrificing accuracy to improve speed.
+	int iStopLayer = m_bStopLayer1 ? 1 : 0;
+	std::cout << "top!"  << iTopLayer << "\n";
+	vector<s_MatchParameter>vecAllResult[NUM_THREADS];
+	
+	
+	
+	int start2 = omp_get_wtime();
+	#pragma omp parallel for num_threads(NUM_THREADS)
 	for (int i = 0; i < (int)vecMatchParameter.size (); i++)
-	//for (int i = 0; i < iSearchSize; i++)
 	{
+		int tid = omp_get_thread_num();
+        double start = omp_get_wtime();
+		// Get the left top point rotated to world coordinates
 		double dRAngle = -vecMatchParameter[i].dMatchAngle * D2R;
 		Point2f ptLT = ptRotatePt2f (vecMatchParameter[i].pt, ptCenter, dRAngle);
-
-		double dAngleStep = atan (2.0 / max (iDstW, iDstH)) * R2D;//min改為max
+		
+		// Get the angle min and max bound when matching
+		double dAngleStep = atan (2.0 / max (iDstW, iDstH)) * R2D;//min changed to max
 		vecMatchParameter[i].dAngleStart = vecMatchParameter[i].dMatchAngle - dAngleStep;
 		vecMatchParameter[i].dAngleEnd = vecMatchParameter[i].dMatchAngle + dAngleStep;
 
 		if (iTopLayer <= iStopLayer)
 		{
+			// This is for rough matching, so it does not happen
 			vecMatchParameter[i].pt = Point2d (ptLT * ((iTopLayer == 0) ? 1 : 2));
-			#pragma omp critical
-			{
-			vecAllResult.push_back (vecMatchParameter[i]);                                                    // PROBLEM FOR OPTIMIZATION
-			}
+			vecAllResult[tid].push_back (vecMatchParameter[i]);                                                    // PROBLEM FOR OPTIMIZATION
 		}
 		else
 		{
+			// We go down each layer starting from the top (there are not a lot of layers usually but this can be done independently??)
 			for (int iLayer = iTopLayer - 1; iLayer >= iStopLayer; iLayer--)
 			{
-				//搜尋角度
+				//search angle
 				dAngleStep = atan (2.0 / max (pTemplData->vecPyramid[iLayer].cols, pTemplData->vecPyramid[iLayer].rows)) * R2D;//min改為max
 				vector<double> vecAngles;
-				//double dAngleS = vecMatchParameter[i].dAngleStart, dAngleE = vecMatchParameter[i].dAngleEnd;
 				double dMatchedAngle = vecMatchParameter[i].dMatchAngle;
+				// Gather angles we are going to test?
 				if (m_bToleranceRange)
 				{
 					for (int i = -1; i <= 1; i++)
@@ -637,11 +644,14 @@ BOOL CMatchToolDlg::Match ()
 						for (int i = -1; i <= 1; i++)
 							vecAngles.push_back (dMatchedAngle + dAngleStep * i);
 				}
+
 				Point2f ptSrcCenter ((vecMatSrcPyr[iLayer].cols - 1) / 2.0f, (vecMatSrcPyr[iLayer].rows - 1) / 2.0f);
 				iSize = (int)vecAngles.size ();
 				vector<s_MatchParameter> vecNewMatchParameter (iSize);
 				int iMaxScoreIndex = 0;
 				double dBigValue = -1;
+				
+				// here we do matching for each angle
 				for (int j = 0; j < iSize; j++)
 				{
 					Mat matResult, matRotatedSrc;
@@ -650,7 +660,6 @@ BOOL CMatchToolDlg::Match ()
 					GetRotatedROI (vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size (), ptLT * 2, vecAngles[j], matRotatedSrc);
 
 					MatchTemplate (matRotatedSrc, pTemplData, matResult, iLayer, TRUE);
-					//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCOEFF_NORMED);
 					minMaxLoc (matResult, 0, &dMaxValue, 0, &ptMaxLoc);
 					vecNewMatchParameter[j] = s_MatchParameter (ptMaxLoc, dMaxValue, vecAngles[j]);
 					
@@ -670,6 +679,8 @@ BOOL CMatchToolDlg::Match ()
 					}
 					//次像素估計
 				}
+
+				// If the match score for the match paramater with the highest score is smaller than whe break
 				if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < vecLayerScore[iLayer])
 					break;
 				//次像素估計
@@ -684,6 +695,7 @@ BOOL CMatchToolDlg::Match ()
 					vecNewMatchParameter[iMaxScoreIndex].pt = Point2d (dNewX, dNewY);
 					vecNewMatchParameter[iMaxScoreIndex].dMatchAngle = dNewAngle;
 				}
+
 				//次像素估計
 
 				double dNewMatchAngle = vecNewMatchParameter[iMaxScoreIndex].dMatchAngle;
@@ -697,10 +709,7 @@ BOOL CMatchToolDlg::Match ()
 				if (iLayer == iStopLayer)
 				{
 					vecNewMatchParameter[iMaxScoreIndex].pt = pt * (iStopLayer == 0 ? 1 : 2);
-					#pragma omp critical
-					{
-					vecAllResult.push_back (vecNewMatchParameter[iMaxScoreIndex]);                                       // PROBLEM FOR OPTIMIZATION
-					}
+					vecAllResult[tid].push_back (vecNewMatchParameter[iMaxScoreIndex]);                                       // PROBLEM FOR OPTIMIZATION
 				}
 				else
 				{
@@ -714,33 +723,41 @@ BOOL CMatchToolDlg::Match ()
 
 		}
 	}
-	FilterWithScore (&vecAllResult, m_dScore);
+	for(int i = 1; i < NUM_THREADS; i++) {
+		vecAllResult[0].insert( vecAllResult[0].end(), vecAllResult[1].begin(), vecAllResult[1].end() );
+	}
+	std::cout << "Baz:" << omp_get_wtime() - start2 << '\n';
+
+
+
+
+	FilterWithScore (&vecAllResult[0], m_dScore);
 
 	//最後濾掉重疊
 	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
 	iDstH = pTemplData->vecPyramid[iStopLayer].rows * (iStopLayer == 0 ? 1 : 2);
 
 	// #pragma omp parallel for                                    // Note: Does not seem to improved or worsen performance
-	for (int i = 0; i < (int)vecAllResult.size (); i++)
+	for (int i = 0; i < (int)vecAllResult[0].size (); i++)
 	{
 		Point2f ptLT, ptRT, ptRB, ptLB;
-		double dRAngle = -vecAllResult[i].dMatchAngle * D2R;
-		ptLT = vecAllResult[i].pt;
+		double dRAngle = -vecAllResult[0][i].dMatchAngle * D2R;
+		ptLT = vecAllResult[0][i].pt;
 		ptRT = Point2f (ptLT.x + iDstW * (float)cos (dRAngle), ptLT.y - iDstW * (float)sin (dRAngle));
 		ptLB = Point2f (ptLT.x + iDstH * (float)sin (dRAngle), ptLT.y + iDstH * (float)cos (dRAngle));
 		ptRB = Point2f (ptRT.x + iDstH * (float)sin (dRAngle), ptRT.y + iDstH * (float)cos (dRAngle));
 		//紀錄旋轉矩形
-		vecAllResult[i].rectR = RotatedRect(ptLT, ptRT, ptRB);
+		vecAllResult[0][i].rectR = RotatedRect(ptLT, ptRT, ptRB);
 	}
-	FilterWithRotatedRect (&vecAllResult, CV_TM_CCOEFF_NORMED, m_dMaxOverlap);
+	FilterWithRotatedRect (&vecAllResult[0], CV_TM_CCOEFF_NORMED, m_dMaxOverlap);
 	//最後濾掉重疊
 
 	//根據分數排序
-	sort (vecAllResult.begin (), vecAllResult.end (), compareScoreBig2Small);
+	sort (vecAllResult[0].begin (), vecAllResult[0].end (), compareScoreBig2Small);
 	
 	m_vecSingleTargetData.clear ();
-	iMatchSize = (int)vecAllResult.size ();
-	if (vecAllResult.size () == 0)
+	iMatchSize = (int)vecAllResult[0].size ();
+	if (vecAllResult[0].size () == 0)
 		return FALSE;
 	int iW = pTemplData->vecPyramid[0].cols, iH = pTemplData->vecPyramid[0].rows;
 
@@ -748,16 +765,16 @@ BOOL CMatchToolDlg::Match ()
 	for (int i = 0; i < min(iMatchSize, m_iMaxPos); i++)                                    
 	{
 		s_SingleTargetMatch sstm;
-		double dRAngle = -vecAllResult[i].dMatchAngle * D2R;
+		double dRAngle = -vecAllResult[0][i].dMatchAngle * D2R;
 
-		sstm.ptLT = vecAllResult[i].pt;
+		sstm.ptLT = vecAllResult[0][i].pt;
 
 		sstm.ptRT = Point2d (sstm.ptLT.x + iW * cos (dRAngle), sstm.ptLT.y - iW * sin (dRAngle));
 		sstm.ptLB = Point2d (sstm.ptLT.x + iH * sin (dRAngle), sstm.ptLT.y + iH * cos (dRAngle));
 		sstm.ptRB = Point2d (sstm.ptRT.x + iH * sin (dRAngle), sstm.ptRT.y + iH * cos (dRAngle));
 		sstm.ptCenter = Point2d ((sstm.ptLT.x + sstm.ptRT.x + sstm.ptRB.x + sstm.ptLB.x) / 4, (sstm.ptLT.y + sstm.ptRT.y + sstm.ptRB.y + sstm.ptLB.y) / 4);
-		sstm.dMatchedAngle = -vecAllResult[i].dMatchAngle;
-		sstm.dMatchScore = vecAllResult[i].dMatchScore;
+		sstm.dMatchedAngle = -vecAllResult[0][i].dMatchAngle;
+		sstm.dMatchScore = vecAllResult[0][i].dMatchScore;
 
 		if (sstm.dMatchedAngle < -180)
 			sstm.dMatchedAngle += 360;
