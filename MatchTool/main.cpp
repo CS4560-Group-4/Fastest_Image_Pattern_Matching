@@ -1,8 +1,15 @@
 #include "MatchToolDlg.h"
 #include <iostream>
 
-int main() {
-    std::string src_path = "./Test Images/Src1.bmp";
+int main(int argc, char** argv) {
+
+    if(argc != 3) {
+        perror("argc\n");
+        exit(EXIT_FAILURE);
+    }
+
+
+    std::string src_path = argv[1];
     // Very important to read the image in GRAYSCALE!
     cv::Mat src = cv::imread(src_path, IMREAD_GRAYSCALE);
     if(src.empty())
@@ -11,7 +18,7 @@ int main() {
         return 1;
     }
  
-    std::string dst_path = "./Test Images/Dst1.bmp";
+    std::string dst_path = argv[2];
     cv::Mat dst = cv::imread(dst_path, IMREAD_GRAYSCALE);
     if(dst.empty())
     {
@@ -58,8 +65,8 @@ int main() {
         putText(src, str, data.ptCenter, FONT_HERSHEY_COMPLEX, 1,CV_RGB(0,255,0), 2);
     }
 
-    cv::imshow("Output", src);
-    cv::waitKey(0);
+    // cv::imshow("Output", src);
+    // cv::waitKey(0);
 
     return 0;
 }
