@@ -1,11 +1,13 @@
 ﻿
+// _mm_dpbssd_epi32 -> This is my goat
+
 // MatchToolDlg.h: 標頭檔
 //
 #include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui_c.h>
 #include <opencv2/imgproc/imgproc_c.h>
 #include <opencv2/imgproc/types_c.h>
-
+#include <immintrin.h>
 #include <thread>
 
 #include <omp.h>
@@ -18,7 +20,7 @@ using namespace std;
 #define FALSE 0
 #define TRUE 1
 
-#define NUM_THREADS 8
+#define NUM_THREADS 1
 
 
 class Timer {
@@ -505,11 +507,13 @@ BOOL CMatchToolDlg::Match ()
 	Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
 	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
 
+	std::cout << "layers" << sizePat  << " " << iSize << "\n";
 	{
 		Timer t("first");
-		#pragma omp parallel for
+		// #pragma omp parallel for
 		for (int i = 0; i < iSize; i++)
 		{	
+			// Timer t2("inner");
 			// std::cout<<omp_get_thread_num()<<std::endl;
 			Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
 			Mat matResult;
@@ -555,7 +559,7 @@ BOOL CMatchToolDlg::Match ()
 					continue;
 				#pragma omp critical
 				{
-				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
 				}
 				for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 				{
@@ -564,7 +568,7 @@ BOOL CMatchToolDlg::Match ()
 						break;
 					#pragma omp critical
 					{
-					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+						vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
 					}
 				}
 			}
@@ -625,7 +629,7 @@ BOOL CMatchToolDlg::Match ()
 	
 	{	
 		Timer t1("second");
-		#pragma omp parallel for num_threads(NUM_THREADS)
+		// #pragma omp parallel for num_threads(NUM_THREADS)
 		for (int i = 0; i < (int)vecMatchParameter.size (); i++)
 		{
 			// Timer t("Inner");
@@ -921,13 +925,23 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 	__m128i Zero = _mm_setzero_si128 ();
 	for (int Y = 0; Y < Block * iBlockSize; Y += iBlockSize)
 	{
+		// Load the 16 bytes in a vector
+		// [01][02][03][04][05][06][07][08][09][10][11][12][13][14][15][16]
 		__m128i SrcK = _mm_loadu_si128 ((__m128i*)(pCharKernel + Y));
 		__m128i SrcC = _mm_loadu_si128 ((__m128i*)(pCharConv + Y));
+		// Extend them to be 16 bits long:
+		// by addding zeros to each one
+		// [01][00][02][00][03][00][04][00][05][00][06][00][07][00][08][00]
 		__m128i SrcK_L = _mm_unpacklo_epi8 (SrcK, Zero);
 		__m128i SrcK_H = _mm_unpackhi_epi8 (SrcK, Zero);
 		__m128i SrcC_L = _mm_unpacklo_epi8 (SrcC, Zero);
 		__m128i SrcC_H = _mm_unpackhi_epi8 (SrcC, Zero);
+		// Multiply each 16 byte together and add them together.
+		// [01][00][02][00][03][00][04][00][05][00][06][00][07][00][08][00]
+		//     *       *       *       *       *      *       *      * 
+		// [01][00][02][00][03][00][04][00][05][00][06][00][07][00][08][00]
 		__m128i SumT = _mm_add_epi32 (_mm_madd_epi16 (SrcK_L, SrcC_L), _mm_madd_epi16 (SrcK_H, SrcC_H));
+		// Accumulate the sum
 		SumV = _mm_add_epi32 (SumV, SumT);
 	}
 	int Sum = _mm_hsum_epi32 (SumV);
@@ -937,32 +951,101 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 	}
 	return Sum;
 }
+
+
+// 基於SSE的字節數據的乘法。
+// <param name="Kernel">需要卷積的核矩陣。 </param>
+// <param name="Conv">卷積矩陣。 </param>
+// <param name="Length">矩陣所有元素的長度。 </param>
+inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
+{
+	const int iBlockSize = 64, Block = iLength / iBlockSize ;
+	__m512i SumV = _mm512_set1_epi8(0);
+	for (int Y = 0; Y < Block * iBlockSize; Y += iBlockSize)
+	{
+		// std::cout << "FAst " << Y  << iLength << '\n';
+		// Load the 16 bytes in a vector
+		// [01][02][03][04][05][06][07][08][09][10][11][12][13][14][15][16]
+		__m512i SrcK = _mm512_loadu_si512 ((__m512i*)(pCharKernel + Y));
+		__m512i SrcC = _mm512_loadu_si512 ((__m512i*)(pCharConv + Y));
+
+		// Load lower and upper bytes
+		__m512i SrcKLower = SrcK;
+		__m512i SrcKUpper = _mm512_and_si512(SrcK, _mm512_set1_epi16(0xff00));
+		__m512i SrcCLower = SrcC;
+		__m512i SrcCUpper = _mm512_and_si512(SrcC, _mm512_set1_epi16(0xff00));
+
+		SumV = _mm512_add_epi32(_mm512_madd_epi16(SrcKLower, SrcCLower),_mm512_madd_epi16(SrcKUpper, SrcCUpper));
+	}
+	int Sum = _mm512_reduce_add_epi32 (SumV);
+
+	int Y = Block * iBlockSize;
+	if (Y < iLength)
+	{
+		int leftover = iLength - Y;
+		__mmask64 mask = _cvtu64_mask64((1ULL << iLength-Y) - 1);
+
+		__m512i SrcK = _mm512_maskz_loadu_epi8 (mask, (__m512i*)(pCharKernel + Y));
+		__m512i SrcC = _mm512_maskz_loadu_epi8 (mask, (__m512i*)(pCharConv + Y));
+
+		// Load lower and upper bytes
+		__m512i SrcKLower = SrcK;
+		__m512i SrcKUpper = _mm512_and_si512(SrcK, _mm512_set1_epi16(0xff00));
+		__m512i SrcCLower = SrcC;
+		__m512i SrcCUpper = _mm512_and_si512(SrcC, _mm512_set1_epi16(0xff00));
+
+		SumV = _mm512_add_epi32(_mm512_madd_epi16(SrcKLower, SrcCLower),_mm512_madd_epi16(SrcKUpper, SrcCUpper));
+
+		Sum += _mm512_reduce_add_epi32 (SumV);
+	}
+	return Sum;
+}
+
+
+
+// 基於SSE的字節數據的乘法。
+// <param name="Kernel">需要卷積的核矩陣。 </param>
+// <param name="Conv">卷積矩陣。 </param>
+// <param name="Length">矩陣所有元素的長度。 </param>
+inline int my_IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
+{
+	int Sum = 0 ;
+	for (int Y = 0; Y < iLength; Y++)
+	{
+		Sum += pCharKernel[Y] * pCharConv[Y];
+	}
+	return Sum;
+}
+
+
+
+
 //#define ORG
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
+	// Timer t("match template");
 	if (m_ckSIMD && bUseSIMD)
 	{
 		//From ImageShop
-		matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
-			matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
+		matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1, matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
 		matResult.setTo (0);
-		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
 
-		int  t_r_end = matTemplate.rows, t_r = 0;
-		// #pragma omp simd                                     // NOTE: Doesn't do much
-		for (int r = 0; r < matResult.rows; r++)                                // TODO: Parallelize this instead of bigger for loop
+		// Template matrix is the matrix at the given pyramid row
+		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
+		int  t_r_end = matTemplate.rows;
+		for (int r = 0; r < matResult.rows; r++)                            
 		{
 			float* r_matResult = matResult.ptr<float> (r);
 			uchar* r_source = matSrc.ptr<uchar> (r);
 			uchar* r_template, *r_sub_source;
-			for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)              // NOTE: Cannot be put here
+			for (int c = 0; c < matResult.cols; ++c, ++r_matResult, ++r_source)
 			{
 				r_template = matTemplate.ptr<uchar> ();
 				r_sub_source = r_source;
-				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols) // NOTE: Cannot be put here
+				for (int t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
 				{
-					*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
+					*r_matResult = *r_matResult + IM_Conv_SIMD(r_template, r_sub_source, matTemplate.cols);
 				}
 			}
 		}

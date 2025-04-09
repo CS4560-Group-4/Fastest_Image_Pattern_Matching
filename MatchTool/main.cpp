@@ -2,6 +2,17 @@
 #include <iostream>
 #include <omp.h>
 
+// #include <immintrin.h>
+// #include <iostream>
+// using namespace std;
+
+// int main() {
+//     float out[8];
+//     float a[8] = { 0.0,1.0,2.0,3.0,4.0,5.0,6.0,7};
+//     __m256 test =  _mm256_load_ps(&a[0]);
+//     cout << "" << endl; // prints 
+//     return 0;
+// }
 
 int main(int argc, char** argv) {
 
@@ -35,6 +46,7 @@ int main(int argc, char** argv) {
     matcher->m_dToleranceAngle = 180;
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
+    matcher->m_ckSIMD = TRUE;
 
     {
         Timer t("match");
@@ -46,13 +58,13 @@ int main(int argc, char** argv) {
     printf("Matches:\n");
     for(int i = 0; i < matcher->m_vecSingleTargetData.size(); i++) {
         auto data = matcher->m_vecSingleTargetData.at(i);
-        // printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) Angle: %f  Score: %f\n",
-        //     data.ptLT.x, data.ptLT.y, 
-        //     data.ptRT.x, data.ptRT.y, 
-        //     data.ptRB.x, data.ptRB.y,
-        //     data.ptLB.x, data.ptLB.y,
-        //     data.dMatchedAngle, data.dMatchScore
-        // );
+        printf("(%.2f %.2f) (%.2f %.2f) (%.2f %.2f) (%.2f %.2f) Angle: %f  Score: %f\n",
+            data.ptLT.x, data.ptLT.y, 
+            data.ptRT.x, data.ptRT.y, 
+            data.ptRB.x, data.ptRB.y,
+            data.ptLB.x, data.ptLB.y,
+            data.dMatchedAngle, data.dMatchScore
+        );
         
         vector<Point> contour;
         contour.push_back(data.ptLT);
@@ -73,33 +85,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-
-
-// using namespace cv;
-// using namespace std;
-
-// int main(int, char)
-// {
-//  Mat img(500, 500, CV_8UC3);
-//  img.setTo(255);
-//  ///////////////////////////////////////////////////
-
-//  ///////////////////////////////////////////////////
-//  //polylines example 1 
-//  vector< Point> contour;
-//  contour.push_back(Point(50, 50));
-//  contour.push_back(Point(300, 50));
-//  contour.push_back(Point(350, 200));
-//  contour.push_back(Point(300, 150));
-//  contour.push_back(Point(150, 350));
-//  contour.push_back(Point(100, 100));
-//  // draw the polygon 
-//  const cv::Point* pts = (const cv::Point*) Mat(contour).data;
-//  int npts = Mat(contour).rows;
-//  polylines(img, &pts, &npts, 1, false, Scalar(0, 255, 0));
-
-//  imshow("show0", img);
-//  waitKey(0);
-
-//  return 0;
-// }
