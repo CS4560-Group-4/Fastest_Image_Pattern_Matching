@@ -48,3 +48,6 @@ Include/
 *.pdb
 *.aps
 *.md
+
+.venv
+.vscode

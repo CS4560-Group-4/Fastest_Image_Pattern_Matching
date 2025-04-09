@@ -1,9 +1,10 @@
-﻿#include <opencv2/opencv.hpp>
+#include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui_c.h>
 #include <opencv2/imgproc/imgproc_c.h>
 #include <opencv2/imgproc/types_c.h>
 
-#pragma once
+using namespace cv;
+using namespace std;
 
 #define BOOL uint8_t
 #define FALSE 0
@@ -1213,3 +1214,5 @@ void CMatchToolDlg::SortPtWithCenter (vector<Point2f>& vecSort)
 	for (int i = 0; i < iSize; i++)
 		vecSort[i] = vecPtAngle[i].first;
 }
+
+int main() { return 0; }
