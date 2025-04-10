@@ -29,9 +29,8 @@ int main(int argc, char** argv) {
 
     CMatchToolDlg* matcher = new CMatchToolDlg();
 
-    matcher->m_iMaxPos = 10;
+    matcher->m_iMaxPos = 300;
     matcher->m_dToleranceAngle = 180;
-
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
     

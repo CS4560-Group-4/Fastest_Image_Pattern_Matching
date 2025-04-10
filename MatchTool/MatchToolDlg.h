@@ -13,6 +13,27 @@ using namespace std;
 #define FALSE 0
 #define TRUE 1
 
+class Timer {
+	private:
+		std::string name;
+		std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
+	
+	public:
+		Timer(const std::string& timer_name = "Timer") : name(timer_name) {
+			start_time = std::chrono::high_resolution_clock::now();
+		}
+	
+		~Timer() {
+			stop();
+		}
+	
+		void stop() {
+			auto end_time = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
+			std::cout << name << ": " << duration.count() << "s" << std::endl;
+		}
+};
+
 
 struct s_TemplData
 {
@@ -464,14 +485,16 @@ BOOL CMatchToolDlg::Match ()
 
 	int iSize = (int)vecAngles.size ();
 	//vector<s_MatchParameter> vecMatchParameter (iSize * (m_iMaxPos + MATCH_CANDIDATE_NUM));
-	vector<s_MatchParameter> vecMatchParameter;
 	//Caculate lowest score at every layer
 	vector<double> vecLayerScore (iTopLayer + 1, m_dScore);
 	for (int iLayer = 1; iLayer <= iTopLayer; iLayer++)
-		vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
-
+	vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
+	
 	Size sizePat = pTemplData->vecPyramid[iTopLayer].size ();
 	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
+	
+	vector<s_MatchParameter> vecMatchParameter;
+	#pragma omp parallel for
 	for (int i = 0; i < iSize; i++)
 	{
 		Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
@@ -495,13 +518,22 @@ BOOL CMatchToolDlg::Match ()
 			blockMax.GetMaxValueLoc (dMaxVal, ptMaxLoc);
 			if (dMaxVal < vecLayerScore[iTopLayer])
 				continue;
-			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			
+			#pragma omp critical
+			{
+				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			}
+
 			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 			{
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap, blockMax);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
-				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				
+				#pragma omp critical
+				{
+					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				}
 			}
 		}
 		else
@@ -509,13 +541,22 @@ BOOL CMatchToolDlg::Match ()
 			minMaxLoc (matResult, 0, &dMaxVal, 0, &ptMaxLoc);
 			if (dMaxVal < vecLayerScore[iTopLayer])
 				continue;
-			vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+
+			#pragma omp critical
+			{
+				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dMaxVal, vecAngles[i]));
+			}
+
 			for (int j = 0; j < m_iMaxPos + MATCH_CANDIDATE_NUM - 1; j++)
 			{
 				ptMaxLoc = GetNextMaxLoc (matResult, ptMaxLoc, pTemplData->vecPyramid[iTopLayer].size (), dValue, m_dMaxOverlap);
 				if (dValue < vecLayerScore[iTopLayer])
 					break;
-				vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+
+				#pragma omp critical
+				{
+					vecMatchParameter.push_back (s_MatchParameter (Point2f (ptMaxLoc.x - fTranslationX, ptMaxLoc.y - fTranslationY), dValue, vecAngles[i]));
+				}
 			}
 		}
 	}
@@ -569,6 +610,8 @@ BOOL CMatchToolDlg::Match ()
 	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
 	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 	vector<s_MatchParameter> vecAllResult;
+
+	#pragma omp parallel for
 	for (int i = 0; i < (int)vecMatchParameter.size (); i++)
 	//for (int i = 0; i < iSearchSize; i++)
 	{
@@ -582,7 +625,10 @@ BOOL CMatchToolDlg::Match ()
 		if (iTopLayer <= iStopLayer)
 		{
 			vecMatchParameter[i].pt = Point2d (ptLT * ((iTopLayer == 0) ? 1 : 2));
-			vecAllResult.push_back (vecMatchParameter[i]);
+			#pragma omp critical
+			{
+				vecAllResult.push_back (vecMatchParameter[i]);
+			}
 		}
 		else
 		{
@@ -613,16 +659,16 @@ BOOL CMatchToolDlg::Match ()
 				double dBigValue = -1;
 				for (int j = 0; j < iSize; j++)
 				{
+
 					Mat matResult, matRotatedSrc;
 					double dMaxValue = 0;
 					Point ptMaxLoc;
 					GetRotatedROI (vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size (), ptLT * 2, vecAngles[j], matRotatedSrc);
-
 					MatchTemplate (matRotatedSrc, pTemplData, matResult, iLayer, TRUE);
 					//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCOEFF_NORMED);
 					minMaxLoc (matResult, 0, &dMaxValue, 0, &ptMaxLoc);
 					vecNewMatchParameter[j] = s_MatchParameter (ptMaxLoc, dMaxValue, vecAngles[j]);
-					
+				
 					if (vecNewMatchParameter[j].dMatchScore > dBigValue)
 					{
 						iMaxScoreIndex = j;
@@ -638,6 +684,7 @@ BOOL CMatchToolDlg::Match ()
 								vecNewMatchParameter[j].vecResult[x + 1][y + 1] = matResult.at<float> (ptMaxLoc + Point (x, y));
 					}
 					//次像素估計
+
 				}
 				if (vecNewMatchParameter[iMaxScoreIndex].dMatchScore < vecLayerScore[iLayer])
 					break;
@@ -666,7 +713,10 @@ BOOL CMatchToolDlg::Match ()
 				if (iLayer == iStopLayer)
 				{
 					vecNewMatchParameter[iMaxScoreIndex].pt = pt * (iStopLayer == 0 ? 1 : 2);
-					vecAllResult.push_back (vecNewMatchParameter[iMaxScoreIndex]);
+					#pragma omp critical
+					{
+						vecAllResult.push_back (vecNewMatchParameter[iMaxScoreIndex]);
+					}
 				}
 				else
 				{
