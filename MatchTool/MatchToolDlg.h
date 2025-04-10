@@ -971,15 +971,15 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 		matResult = Scalar::all (1);
 		return;
 	}
-	double *q0 = 0, *q1 = 0, *q2 = 0, *q3 = 0;
+
 
 	Mat sum, sqsum;
 	integral (matSrc, sum, sqsum, CV_64F);
 
-	q0 = (double*)sqsum.data;
-	q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
-	q2 = (double*)(sqsum.data + pTemplData->vecPyramid[iLayer].rows * sqsum.step);
-	q3 = q2 + pTemplData->vecPyramid[iLayer].cols;
+	double* q0 = (double*)sqsum.data;
+	double* q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
+	double* q2 = (double*)(sqsum.data + pTemplData->vecPyramid[iLayer].rows * sqsum.step);
+	double* q3 = q2 + pTemplData->vecPyramid[iLayer].cols;
 
 	double* p0 = (double*)sum.data;
 	double* p1 = p0 + pTemplData->vecPyramid[iLayer].cols;
@@ -990,44 +990,38 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 	int sqstep = sqsum.data ? (int)(sqsum.step / sizeof (double)) : 0;
 
 	//
-	double dTemplMean0 = pTemplData->vecTemplMean[iLayer][0];
+	double dTemplMean = pTemplData->vecTemplMean[iLayer][0];
 	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
 	double dInvArea = pTemplData->vecInvArea[iLayer];
-	//
+	
+	std::cout << "matResult " << matResult.cols << " " << matResult.rows << " " << sizeof(double) << "\n"; 
 
-	int i, j;
-	for (i = 0; i < matResult.rows; i++)
+	for (int i = 0; i < matResult.rows; i++)
 	{
 		float* rrow = matResult.ptr<float> (i);
 		int idx = i * sumstep;
 		int idx2 = i * sqstep;
 
-		for (j = 0; j < matResult.cols; j += 1, idx += 1, idx2 += 1)
+		for (int j = 0; j < matResult.cols; j += 1)
 		{
-			double num = rrow[j], t;
-			double wndMean2 = 0, wndSum2 = 0;
 
-			t = p0[idx] - p1[idx] - p2[idx] + p3[idx];
-			wndMean2 += t * t;
-			num -= t * dTemplMean0;
-			wndMean2 *= dInvArea;
+			double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
+			double num = rrow[j] - t * dTemplMean;
 
-
-			t = q0[idx2] - q1[idx2] - q2[idx2] + q3[idx2];
-			wndSum2 += t;
+			double wndMean = t * t * dInvArea;
+			double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
 
 
-			//t = std::sqrt (MAX (wndSum2 - wndMean2, 0)) * dTemplNorm;
-
-			double diff2 = MAX (wndSum2 - wndMean2, 0);
-			if (diff2 <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
-				t = 0; // avoid rounding errors
+			double threshold = 0;
+			double diff = MAX (wndSum2 - wndMean, 0);
+			if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
+				threshold = 0; // avoid rounding errors
 			else
-				t = std::sqrt (diff2)*dTemplNorm;
+				threshold = std::sqrt (diff)*dTemplNorm;
 
-			if (fabs (num) < t)
-				num /= t;
-			else if (fabs (num) < t * 1.125)
+			if (fabs (num) < threshold)
+				num /= threshold;
+			else if (fabs (num) < threshold * 1.125)
 				num = num > 0 ? 1 : -1;
 			else
 				num = 0;
