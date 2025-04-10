@@ -51,3 +51,4 @@ Include/
 
 .vscode
 venv/
+.idea
