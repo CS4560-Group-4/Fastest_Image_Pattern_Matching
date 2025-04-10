@@ -5,6 +5,7 @@
 #include <opencv2/highgui/highgui_c.h>
 #include <opencv2/imgproc/imgproc_c.h>
 #include <opencv2/imgproc/types_c.h>
+#include <smmintrin.h>
 using namespace cv;
 using namespace std;
 #pragma once
@@ -282,6 +283,10 @@ private:
 	void MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD);
 	void GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI);
 	void CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer);
+	void CCOEFF_Denominator_SIMD (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer);
+
+	void CCOEFF_Denominator_SIMD_AVX(cv::Mat &matSrc, s_TemplData *pTemplData, cv::Mat &matResult, int iLayer);
+
 	Size  GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAngle);
 	Point2f ptRotatePt2f (Point2f ptInput, Point2f ptOrg, double dAngle);
 	void FilterWithScore (vector<s_MatchParameter>* vec, double dScore);
@@ -494,7 +499,7 @@ BOOL CMatchToolDlg::Match ()
 	BOOL bCalMaxByBlock = (vecMatSrcPyr[iTopLayer].size ().area () / sizePat.area () > 500) && m_iMaxPos > 10;
 	
 	vector<s_MatchParameter> vecMatchParameter;
-	#pragma omp parallel for
+	// #pragma omp parallel for
 	for (int i = 0; i < iSize; i++)
 	{
 		Mat matRotatedSrc, matR = getRotationMatrix2D (ptCenter, vecAngles[i], 1);
@@ -611,7 +616,7 @@ BOOL CMatchToolDlg::Match ()
 	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
 	vector<s_MatchParameter> vecAllResult;
 
-	#pragma omp parallel for
+	// #pragma omp parallel for
 	for (int i = 0; i < (int)vecMatchParameter.size (); i++)
 	//for (int i = 0; i < iSearchSize; i++)
 	{
@@ -945,6 +950,7 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 	absdiff(matResult, matResult, diff);
 	double dMaxValue;
 	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
+	// CCOEFF_Denominator_SIMD (matSrc, pTemplData, matResult, iLayer);
 	CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
 }
 void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
@@ -964,7 +970,87 @@ void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double 
 	//Debug
 	warpAffine (matSrc, matROI, rMat, sizePadding);
 }
+
+
+BOOL first = FALSE;
+
 void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
+{
+	if (pTemplData->vecResultEqual1[iLayer])
+	{
+		matResult = Scalar::all (1);
+		return;
+	}
+
+	Mat sum, sqsum;
+	integral (matSrc, sum, sqsum, CV_64F);
+
+	double* q0 = (double*)sqsum.data;
+	double* q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
+	double* q2 = (double*)(sqsum.data + pTemplData->vecPyramid[iLayer].rows * sqsum.step);
+	double* q3 = q2 + pTemplData->vecPyramid[iLayer].cols;
+
+	double* p0 = (double*)sum.data;
+	double* p1 = p0 + pTemplData->vecPyramid[iLayer].cols;
+	double* p2 = (double*)(sum.data + pTemplData->vecPyramid[iLayer].rows*sum.step);
+	double* p3 = p2 + pTemplData->vecPyramid[iLayer].cols;
+
+	int sumstep = sum.data ? (int)(sum.step / sizeof (double)) : 0;
+	int sqstep = sqsum.data ? (int)(sqsum.step / sizeof (double)) : 0;
+
+	//
+	double dTemplMean = pTemplData->vecTemplMean[iLayer][0];
+	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
+	double dInvArea = pTemplData->vecInvArea[iLayer];
+	
+	for (int i = 0; i < matResult.rows; i++)
+	{
+		float* rrow = matResult.ptr<float> (i);
+		int idx = i * sumstep;
+		int idx2 = i * sqstep;
+
+		for (int j = 0; j < matResult.cols; j += 1)
+		{
+
+			double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
+			// printf("t: %lf\n", t);
+
+			double num = (double)rrow[j] - t * dTemplMean;
+			// printf("tmp: %lf %f\n", t * dTemplMean, rrow[j]);
+			// printf("num: %lf\n", num);
+
+			double wndMean = t * t * dInvArea;
+			double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
+			// printf("wndMean: %lf\n", wndMean);
+			// printf("wndSum2: %lf\n", wndSum2);
+
+
+			double threshold = 0;
+			double diff = MAX (wndSum2 - wndMean, 0);
+			if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
+				threshold = 0; // avoid rounding errors
+			else
+				threshold = std::sqrt (diff)*dTemplNorm;
+			// printf("threshold: %lf\n", threshold);
+
+			if (fabs (num) < threshold)
+				num /= threshold;
+			else if (fabs (num) < threshold * 1.125)
+				num = num > 0 ? 1 : -1;
+			else
+				num = 0;
+
+			rrow[j] = (float)num;
+		}
+	}
+}
+
+static float blend(float* a, float* b, unsigned int mask) {
+	return (*reinterpret_cast<unsigned int*>(a) & (~mask)) | (*reinterpret_cast<unsigned int*>(b) & ~mask);
+}
+
+
+inline void CMatchToolDlg::CCOEFF_Denominator_SIMD (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
 {
 	if (pTemplData->vecResultEqual1[iLayer])
 	{
@@ -994,7 +1080,6 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
 	double dInvArea = pTemplData->vecInvArea[iLayer];
 	
-	std::cout << "matResult " << matResult.cols << " " << matResult.rows << " " << sizeof(double) << "\n"; 
 
 	for (int i = 0; i < matResult.rows; i++)
 	{
@@ -1002,34 +1087,252 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 		int idx = i * sumstep;
 		int idx2 = i * sqstep;
 
-		for (int j = 0; j < matResult.cols; j += 1)
+		int blockSize = 2;
+		int blocks = matResult.cols / blockSize;
+		int remainder = blocks*blockSize == matResult.cols ? 0 : 1;
+		unsigned int add_mask  = blocks*blockSize == matResult.cols ? 0x0 : 0xFFFFFFFF;
+		for (int j=0; j < blocks + remainder; j++)
 		{
+			
+			// double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
+			__m128d vec_p0 = _mm_loadu_pd(&p0[idx +j*blockSize]);
+			__m128d vec_p1 = _mm_loadu_pd(&p1[idx +j*blockSize]);
+			__m128d vec_p2 = _mm_loadu_pd(&p2[idx +j*blockSize]);
+			__m128d vec_p3 = _mm_loadu_pd(&p3[idx +j*blockSize]);
+			__m128d t = _mm_add_pd(vec_p0, vec_p3);
 
-			double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
-			double num = rrow[j] - t * dTemplMean;
+			t = _mm_sub_pd(t, vec_p1);
+			t = _mm_sub_pd(t, vec_p2);
 
-			double wndMean = t * t * dInvArea;
-			double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
+			// printf("t: %lf\n", t[0]);
+
+			// double num = rrow[j] - t * dTemplMean;
+			const __m128d zeros = _mm_setzero_pd();
+
+			__m128d vec_num = _mm_cvtps_pd(_mm_loadl_pi( reinterpret_cast<__m128>(zeros), reinterpret_cast<__m64 *>(rrow + j * blockSize)));
+			__m128d tmp = _mm_mul_pd(t, _mm_set1_pd(dTemplMean));
+			// printf("tmp: %lf %f %f\n", tmp[0], rrow[j*blockSize], vec_num[0]);
+			vec_num = _mm_sub_pd(vec_num, tmp);
+			// printf("num: %lf\n", vec_num[0]);
+
+			// double wndMean = t * t * dInvArea;
+			__m128d vec_wndMean = _mm_mul_pd(_mm_mul_pd(t, t), _mm_set1_pd(dInvArea));
+			// printf("vec_wndMean: %lf\n", vec_wndMean[0]);
+
+			// double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
+			__m128d vec_q0 = _mm_loadu_pd(&q0[idx +j*blockSize]);
+			__m128d vec_q1 = _mm_loadu_pd(&q1[idx +j*blockSize]);
+			__m128d vec_q2 = _mm_loadu_pd(&q2[idx +j*blockSize]);
+			__m128d vec_q3 = _mm_loadu_pd(&q3[idx +j*blockSize]);
+			__m128d vec_wndSum2 = _mm_add_pd(vec_q0, vec_q3);
+			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q1);
+			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q2);
+			// printf("vec_wndSum2: %lf\n", vec_wndSum2[0]);
+
+			// double diff = MAX (wndSum2 - wndMean, 0);
+			__m128d vec_diff = _mm_max_pd(_mm_sub_pd(vec_wndSum2, vec_wndMean), zeros);
+			// std::min (0.5, 10 * FLT_EPSILON * wndSum2)
+			__m128d vec_diffThresh = _mm_min_pd(_mm_set1_pd(0.5), _mm_mul_pd(_mm_set1_pd(10 * FLT_EPSILON), vec_wndSum2 ));
+
+			// printf("vec_diff: %lf\n", vec_diff[0]);
+			// printf("vec_diffThresh: %lf\n", vec_diffThresh[0]);
+
+			// double threshold = 0;
+			// if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
+			// 	threshold = 0; // avoid rounding errors
+			// else
+			// 	threshold = std::sqrt (diff)*dTemplNorm;
+
+			__m128d threshold_val_false = _mm_mul_pd(_mm_sqrt_pd(vec_diff), _mm_set1_pd(dTemplNorm));
+			__m128d vec_threshold_mask = _mm_cmple_pd(vec_diff, vec_diffThresh);
+			__m128d vec_threshold = _mm_andnot_pd(vec_threshold_mask, threshold_val_false);
+			// printf("vec_threshold: %lf\n", vec_threshold[0]);
 
 
-			double threshold = 0;
-			double diff = MAX (wndSum2 - wndMean, 0);
-			if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
-				threshold = 0; // avoid rounding errors
-			else
-				threshold = std::sqrt (diff)*dTemplNorm;
+			// fabs (num)
+			// ( from https://stackoverflow.com/questions/5508628/how-to-absolute-2-double-or-4-floats-using-sse-instruction-set-up-to-sse4)
+			__m128d sign_mask = _mm_set1_pd(-0.f);
+			__m128d vec_num_abs = _mm_andnot_pd(sign_mask, vec_num);
+			// abs (num) < threshold
+			__m128d mask_theshold = _mm_cmplt_pd(vec_num_abs, vec_threshold);
+			// fabs (num) < threshold * 1.125
+			__m128d mask_theshold_mult = _mm_cmplt_pd(vec_num_abs, _mm_mul_pd(vec_threshold, _mm_set1_pd(1.125)));
+			//  num > 0 
+			__m128d mask_gt_zero = _mm_cmpgt_pd(vec_num, zeros);
+			// num / threshold
+			__m128d vec_num_div_thresh = _mm_div_pd(vec_num, vec_threshold);
 
-			if (fabs (num) < threshold)
-				num /= threshold;
-			else if (fabs (num) < threshold * 1.125)
-				num = num > 0 ? 1 : -1;
-			else
-				num = 0;
 
-			rrow[j] = (float)num;
+			// if (fabs (num) < threshold)
+			// 	num /= threshold;
+			// else if (fabs (num) < threshold * 1.125)
+			// 	num = num > 0 ? 1 : -1;
+			// else
+			// 	num = 0;
+			// Not the most efficient but I do not care
+			__m128d ones = _mm_set1_pd(1.0f);
+			__m128d minus_ones = _mm_set1_pd(-1.0f);
+			vec_num = _mm_or_pd(
+				_mm_and_pd(vec_num_div_thresh,mask_theshold),
+			_mm_or_pd(
+				_mm_and_pd(ones ,_mm_andnot_pd(mask_theshold, _mm_and_pd( mask_gt_zero, mask_theshold_mult))),
+			_mm_or_pd(
+					_mm_and_pd(minus_ones ,_mm_andnot_pd(mask_theshold, _mm_andnot_pd(mask_gt_zero, mask_theshold_mult))),
+					zeros
+				)
+			));
+			__m128 result = _mm_cvtpd_ps(vec_num);
+
+			rrow[j*blockSize] = vec_num[0];
+			float myFloat = (static_cast<float>(vec_num[1]));
+			// This is a buffer overflow :)
+			rrow[j*blockSize+1] = blend(&rrow[j*blockSize+1], &myFloat , add_mask);
 		}
 	}
 }
+
+// void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
+// {
+// 	if (pTemplData->vecResultEqual1[iLayer])
+// 	{
+// 		matResult = Scalar::all (1);
+// 		return;
+// 	}
+//
+//
+// 	Mat sum, sqsum;
+// 	integral (matSrc, sum, sqsum, CV_64F);
+//
+// 	double* q0 = (double*)sqsum.data;
+// 	double* q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
+// 	double* q2 = (double*)(sqsum.data + pTemplData->vecPyramid[iLayer].rows * sqsum.step);
+// 	double* q3 = q2 + pTemplData->vecPyramid[iLayer].cols;
+//
+// 	double* p0 = (double*)sum.data;
+// 	double* p1 = p0 + pTemplData->vecPyramid[iLayer].cols;
+// 	double* p2 = (double*)(sum.data + pTemplData->vecPyramid[iLayer].rows*sum.step);
+// 	double* p3 = p2 + pTemplData->vecPyramid[iLayer].cols;
+//
+// 	int sumstep = sum.data ? (int)(sum.step / sizeof (double)) : 0;
+// 	int sqstep = sqsum.data ? (int)(sqsum.step / sizeof (double)) : 0;
+//
+// 	//
+// 	double dTemplMean = pTemplData->vecTemplMean[iLayer][0];
+// 	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
+// 	double dInvArea = pTemplData->vecInvArea[iLayer];
+//
+//
+// 	for (int i = 0; i < matResult.rows; i++)
+// 	{
+// 		float* rrow = matResult.ptr<float> (i);
+// 		int idx = i * sumstep;
+// 		int idx2 = i * sqstep;
+//
+// 		int blockSize = 4;
+// 		int blocks = matResult.cols / blockSize;
+// 		int remainder = blocks*blockSize == matResult.cols ? 0 : 1;
+// 		unsigned int add_mask  = blocks*blockSize == matResult.cols ? 0x0 : 0xFFFFFFFF;
+// 		for (int j=0; j < blocks + remainder; j++)
+// 		{
+//
+// 			// double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
+// 			__m256d vec_p0 = _mm_loadu_pd(&p0[idx +j*blockSize]);
+// 			__m256d vec_p1 = _mm_loadu_pd(&p1[idx +j*blockSize]);
+// 			__m256d vec_p2 = _mm_loadu_pd(&p2[idx +j*blockSize]);
+// 			__m256d vec_p3 = _mm_loadu_pd(&p3[idx +j*blockSize]);
+// 			__m256d t = _mm_add_pd(vec_p0, vec_p3);
+//
+// 			t = _mm_sub_pd(t, vec_p1);
+// 			t = _mm_sub_pd(t, vec_p2);
+//
+// 			// printf("t: %lf\n", t[0]);
+//
+// 			// double num = rrow[j] - t * dTemplMean;
+// 			__m256d vec_num = _mm_set_pd(rrow[j*blockSize+1], rrow[j*blockSize]);
+// 			__m256d tmp = _mm_mul_pd(t, _mm_set1_pd(dTemplMean));
+// 			// printf("tmp: %lf %f %f\n", tmp[0], rrow[j*blockSize], vec_num[0]);
+// 			vec_num = _mm_sub_pd(vec_num, tmp);
+// 			// printf("num: %lf\n", vec_num[0]);
+//
+// 			// double wndMean = t * t * dInvArea;
+// 			__m256d vec_wndMean = _mm_mul_pd(_mm_mul_pd(t, t), _mm_set1_pd(dInvArea));
+// 			// printf("vec_wndMean: %lf\n", vec_wndMean[0]);
+//
+// 			// double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
+// 			__m256d vec_q0 = _mm_loadu_pd(&q0[idx +j*blockSize]);
+// 			__m256d vec_q1 = _mm_loadu_pd(&q1[idx +j*blockSize]);
+// 			__m256d vec_q2 = _mm_loadu_pd(&q2[idx +j*blockSize]);
+// 			__m256d vec_q3 = _mm_loadu_pd(&q3[idx +j*blockSize]);
+// 			__m256d vec_wndSum2 = _mm_add_pd(vec_q0, vec_q3);
+// 			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q1);
+// 			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q2);
+// 			// printf("vec_wndSum2: %lf\n", vec_wndSum2[0]);
+//
+// 			const __m256d zeros = _mm_setzero_pd();
+// 			// double diff = MAX (wndSum2 - wndMean, 0);
+// 			__m256d vec_diff = _mm_max_pd(_mm_sub_pd(vec_wndSum2, vec_wndMean), zeros);
+// 			// std::min (0.5, 10 * FLT_EPSILON * wndSum2)
+// 			__m256d vec_diffThresh = _mm_min_pd(_mm_set1_pd(0.5), _mm_mul_pd(_mm_set1_pd(10 * FLT_EPSILON), vec_wndSum2 ));
+//
+// 			// printf("vec_diff: %lf\n", vec_diff[0]);
+// 			// printf("vec_diffThresh: %lf\n", vec_diffThresh[0]);
+//
+// 			// double threshold = 0;
+// 			// if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
+// 			// 	threshold = 0; // avoid rounding errors
+// 			// else
+// 			// 	threshold = std::sqrt (diff)*dTemplNorm;
+//
+// 			__m256d threshold_val_false = _mm_mul_pd(_mm_sqrt_pd(vec_diff), _mm_set1_pd(dTemplNorm));
+// 			__m256d threshold_val_true = zeros;
+// 			__m256d vec_threshold_mask = _mm_cmple_pd(vec_diff, vec_diffThresh);
+// 			__m256d vec_threshold = _mm_blendv_pd(threshold_val_false,threshold_val_true, vec_threshold_mask);
+// 			// printf("vec_threshold: %lf\n", vec_threshold[0]);
+//
+//
+// 			// fabs (num)
+// 			// ( from https://stackoverflow.com/questions/5508628/how-to-absolute-2-double-or-4-floats-using-sse-instruction-set-up-to-sse4)
+// 			__m256d sign_mask = _mm_set1_pd(-0.f);
+// 			__m256d vec_num_abs = _mm_andnot_pd(sign_mask, vec_num);
+// 			// abs (num) < threshold
+// 			__m256d mask_theshold = _mm_cmplt_pd(vec_num_abs, vec_threshold);
+// 			// fabs (num) < threshold * 1.125
+// 			__m256d mask_theshold_mult = _mm_cmplt_pd(vec_num_abs, _mm_mul_pd(vec_threshold, _mm_set1_pd(1.125)));
+// 			//  num > 0
+// 			__m256d mask_gt_zero = _mm_cmpgt_pd(vec_num, zeros);
+// 			// num / threshold
+// 			__m256d vec_num_div_thresh = _mm_div_pd(vec_num, vec_threshold);
+//
+//
+// 			// if (fabs (num) < threshold)
+// 			// 	num /= threshold;
+// 			// else if (fabs (num) < threshold * 1.125)
+// 			// 	num = num > 0 ? 1 : -1;
+// 			// else
+// 			// 	num = 0;
+// 			// Not the most efficient but I do not care
+// 			__m256d ones = _mm_set1_pd(1.0f);
+// 			__m256d minus_ones = _mm_set1_pd(-1.0f);
+// 			vec_num = _mm_or_pd(
+// 				_mm_and_pd(vec_num_div_thresh,mask_theshold),
+// 			_mm_or_pd(
+// 				_mm_and_pd(ones ,_mm_andnot_pd(mask_theshold, _mm_and_pd( mask_gt_zero, mask_theshold_mult))),
+// 			_mm_or_pd(
+// 					_mm_and_pd(minus_ones ,_mm_andnot_pd(mask_theshold, _mm_andnot_pd(mask_gt_zero, mask_theshold_mult))),
+// 					zeros
+// 				)
+// 			));
+//
+// 			rrow[j*blockSize] = vec_num[0];
+// 			float myFloat = (static_cast<float>(vec_num[1]));
+// 			// This is a buffer overflow :)
+// 			rrow[j*blockSize+1] = blend(&rrow[j*blockSize+1], &myFloat , add_mask);
+// 		}
+// 	}
+// }
+//
+
+
 Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAngle)
 {
 	double dRAngle_radian = dRAngle * D2R;

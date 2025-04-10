@@ -33,10 +33,13 @@ int main(int argc, char** argv) {
     matcher->m_dToleranceAngle = 180;
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
-    
-    matcher->LearnPattern();
-    BOOL result = matcher->Match();
-    
+
+
+    {
+        auto t = Timer("match");
+        matcher->LearnPattern();
+        BOOL result = matcher->Match();
+    }
 
     cvtColor (src, src, CV_GRAY2BGR);
     printf("Matches:\n");
