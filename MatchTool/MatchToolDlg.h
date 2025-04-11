@@ -289,6 +289,10 @@ private:
 	                                    int iDstH);
 
 	void MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD);
+
+	void MatchTemplateInverted(cv::Mat &matSrc, s_TemplData *pTemplData, cv::Mat &matResult, int iLayer,
+	                           uint8_t bUseSIMD);
+
 	void GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI);
 	void CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer);
 	void CCOEFF_Denominator_SIMD (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer);
@@ -710,25 +714,20 @@ BOOL CMatchToolDlg::Match ()
 		}
 	}
 
-	int iSize = vecAngles.size();
 	int iTopSrcW = vecMatSrcPyr[iTopLayer].cols, iTopSrcH = vecMatSrcPyr[iTopLayer].rows;
+	int iDstW = pTemplData->vecPyramid[iTopLayer].cols, iDstH = pTemplData->vecPyramid[iTopLayer].rows;
 	Point2f ptCenter ((iTopSrcW - 1) / 2.0f, (iTopSrcH - 1) / 2.0f);
 	vector<double> vecLayerScore (iTopLayer + 1, m_dScore);
 	for (int iLayer = 1; iLayer <= iTopLayer; iLayer++)
 		vecLayerScore[iLayer] = vecLayerScore[iLayer - 1] * 0.9;
 
+	printf("PART 1\n");
 	auto vecMatchParameter = GetMatchCandidates(vecMatSrcPyr, iTopLayer, vecAngles, vecLayerScore, ptCenter);
-	
-	int iDstW = pTemplData->vecPyramid[iTopLayer].cols, iDstH = pTemplData->vecPyramid[iTopLayer].rows;
-
-	//第一階段結束
-	BOOL bSubPixelEstimation = m_bSubPixel;
-	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
-	//int iSearchSize = min (m_iMaxPos + MATCH_CANDIDATE_NUM, (int)vecMatchParameter.size ());//可能不需要搜尋到全部 太浪費時間
+	printf("PART 2\n");
 	vector<s_MatchParameter> vecAllResult = GetMatches(vecMatchParameter, vecMatSrcPyr, vecLayerScore, ptCenter, iTopLayer, iDstW, iDstH);
 
-
 	//最後濾掉重疊
+	int iStopLayer = m_bStopLayer1 ? 1 : 0; //设置为1时：粗匹配，牺牲精度提升速度。
 	iDstW = pTemplData->vecPyramid[iStopLayer].cols * (iStopLayer == 0 ? 1 : 2);
 	iDstH = pTemplData->vecPyramid[iStopLayer].rows * (iStopLayer == 0 ? 1 : 2);
 
@@ -997,6 +996,9 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
+	if (true)
+		MatchTemplateInverted(matSrc, pTemplData, matResult, iLayer, bUseSIMD);
+
 	if (m_ckSIMD && bUseSIMD)
 	{
 		//From ImageShop
@@ -1004,6 +1006,7 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 			matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
 		matResult.setTo (0);
 		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
+		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
 
 		int  t_r_end = matTemplate.rows, t_r = 0;
 		for (int r = 0; r < matResult.rows; r++)
@@ -1035,6 +1038,42 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 	CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
 	// CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
 }
+
+
+void CMatchToolDlg::MatchTemplateInverted (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
+{
+	if (m_ckSIMD && bUseSIMD)
+	{
+		//From ImageShop
+		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
+		matResult.create (matSrc.rows - matTemplate.rows + 1,matSrc.cols - matTemplate.cols + 1, CV_32FC1);
+		matResult.setTo (0);
+
+		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
+
+		uchar* r_templ = matTemplate.ptr<uchar> (0);
+		for (int tr =0; tr < matTemplate.rows; tr++) {
+			for (int rr = 0; rr < matResult.rows * matResult.cols; rr++) {
+				float* r_result = matResult.ptr<float> (0);
+				uchar* r_src = matSrc.ptr<uchar> ( rr);
+				r_result[rr] += r_templ[tr] * r_src[tr];
+			}
+		}
+	}
+	else
+		matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
+
+	/*Mat diff;
+	absdiff(matResult, matResult, diff);
+	double dMaxValue;
+	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
+	CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
+	// CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
+}
+
+
+
+
 void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
 {
 	double dAngle_radian = dAngle * D2R;
