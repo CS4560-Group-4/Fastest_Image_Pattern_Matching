@@ -889,6 +889,8 @@ inline int _mm_hsum_epi32 (__m128i V)      // V3 V2 V1 V0
 	return _mm_cvtsi128_si32 (T);       // 提取低位 
 }
 
+int times =  0;
+
 //From ImageShop
 // 4個有符號的32位的數據相加的和。
 inline int _mm256_hsum_epi32 (__m256i V)      // V3 V2 V1 V0
@@ -896,8 +898,8 @@ inline int _mm256_hsum_epi32 (__m256i V)      // V3 V2 V1 V0
 	// 實測這個速度要快些，_mm_extract_epi32最慢。
 	__m256i T = _mm256_hadd_epi32(V, V);
 	T = _mm256_hadd_epi32(T, T);
-	T = _mm256_permute2f128_si256 (T, T, 1);
-	T = _mm256_hadd_epi32(T, T);
+	__m256i P = _mm256_permute2f128_si256 (T, T, 1);
+	T = _mm256_add_epi32(P, T);
 	return _mm256_cvtsi256_si32 (T);
 }
 
@@ -930,19 +932,65 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 }
 
 
+inline int IM_Conv (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
+{
+	int Sum = 0;
+	for (int Y =0; Y < iLength; Y++)
+	{
+		Sum += pCharKernel[Y] * pCharConv[Y];
+	}
+
+	if (times < 100) {
+		printf("SUM %d\n", Sum);
+		times++;
+	}
+
+	return Sum;
+}
+
+void printBytes(__m256i* vec) {
+	for (int Y = 0; Y < 32; Y++) {
+		printf("%02hhx ", ((char *)vec)[Y]);
+	}
+	printf("\n");
+}
+
+
 // 基於SSE的字節數據的乘法。
 // <param name="Kernel">需要卷積的核矩陣。 </param>
 // <param name="Conv">卷積矩陣。 </param>
 // <param name="Length">矩陣所有元素的長度。 </param>
 inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
 {
-	const int iBlockSize = 16, Block = iLength / iBlockSize;
+	const int iBlockSize = 32, Block = iLength / iBlockSize;
 	__m256i SumV = _mm256_setzero_si256 ();
 	__m256i Zero = _mm256_setzero_si256 ();
-	for (int Y = 0; Y < Block * iBlockSize; Y += iBlockSize)
+
+	static const char iotaArr[iBlockSize] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 };
+	const __m256i iota = *(__m256i*)&iotaArr;
+
+	for (int Y = 0; Y < iLength; Y += iBlockSize)
 	{
+		char diff = min(iLength - Y, 127);
+		__m256i clownMask = _mm256_set1_epi8(diff);
+		// printf("1 %hhx\n", diff);
+		// printBytes(&clownMask);
+		clownMask = _mm256_sub_epi8(clownMask, iota);
+		// printf("2\n");
+		// printBytes(&clownMask);
+
+		clownMask = _mm256_cmpgt_epi8( clownMask, Zero);
+		// printf("3\n");
+		// printBytes(&clownMask);
+
 		__m256i SrcK = _mm256_loadu_si256((__m256i*)(pCharKernel + Y));
 		__m256i SrcC = _mm256_loadu_si256 ((__m256i*)(pCharConv + Y));
+		// printBytes(&SrcK);
+		// printBytes(&SrcC);
+
+		SrcK = _mm256_and_si256 (SrcK, clownMask);
+		SrcC = _mm256_and_si256 (SrcC, clownMask);
+
 		__m256i SrcK_L = _mm256_unpacklo_epi8 (SrcK, Zero);
 		__m256i SrcK_H = _mm256_unpackhi_epi8 (SrcK, Zero);
 		__m256i SrcC_L = _mm256_unpacklo_epi8 (SrcC, Zero);
@@ -950,13 +998,12 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 		__m256i SumT = _mm256_add_epi32 (_mm256_madd_epi16 (SrcK_L, SrcC_L), _mm256_madd_epi16 (SrcK_H, SrcC_H));
 		SumV = _mm256_add_epi32 (SumV, SumT);
 	}
+
 	int Sum = _mm256_hsum_epi32 (SumV);
-	for (int Y = Block * iBlockSize; Y < iLength; Y++)
-	{
-		Sum += pCharKernel[Y] * pCharConv[Y];
-	}
 	return Sum;
 }
+
+
 //#define ORG
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
@@ -979,9 +1026,11 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 			{
 				r_template = matTemplate.ptr<uchar> ();
 				r_sub_source = r_source;
-				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
+				for (t_r = 0; t_r < t_r_end; ++t_r)
 				{
-					*r_matResult = *r_matResult + IM_Conv_SIMD(r_template, r_sub_source, matTemplate.cols);
+					r_sub_source += matSrc.cols;
+					r_template += matTemplate.cols;
+					*r_matResult = *r_matResult + IM_Conv_SIMD_AVX(r_template, r_sub_source, matTemplate.cols);
 				}
 			}
 		}
@@ -994,8 +1043,8 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 	absdiff(matResult, matResult, diff);
 	double dMaxValue;
 	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
-	// CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
-	CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
+	CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
+	// CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
 }
 void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
 {
@@ -1097,7 +1146,11 @@ static float blend(float* a, float* b, unsigned int mask) {
 	return (*reinterpret_cast<unsigned int*>(a) & (~mask)) | (*reinterpret_cast<unsigned int*>(b) & ~mask);
 }
 
-
+void print128_num(__m128i var)
+{
+	uint32_t *val = (uint32_t*) &var;//can also use uint32_t instead of 16_t
+	printf("Numerical: %i %i %i %i \n",val[0], val[1], val[2], val[3]);
+}
 
 inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
 {
@@ -1153,13 +1206,13 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 			int blocks = matResult.cols / blockSize;
 			int hasExtra =  (matResult.cols - blockSize * blocks) > 0 ? 1 : 0;
 
-			for (int j=0; j < blocks + hasExtra; j++)
+			for (int j=0; j < matResult.cols; j+=blockSize)
 			{
 				// double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
-				__m256d vec_p0 = _mm256_loadu_pd(&p0[idx +j*blockSize]);
-				__m256d vec_p1 = _mm256_loadu_pd(&p1[idx +j*blockSize]);
-				__m256d vec_p2 = _mm256_loadu_pd(&p2[idx +j*blockSize]);
-				__m256d vec_p3 = _mm256_loadu_pd(&p3[idx +j*blockSize]);
+				__m256d vec_p0 = _mm256_loadu_pd(&p0[idx +j]);
+				__m256d vec_p1 = _mm256_loadu_pd(&p1[idx +j]);
+				__m256d vec_p2 = _mm256_loadu_pd(&p2[idx +j]);
+				__m256d vec_p3 = _mm256_loadu_pd(&p3[idx +j]);
 				__m256d t = _mm256_add_pd(vec_p0, vec_p3);
 				t = _mm256_sub_pd(t, vec_p1);
 				t = _mm256_sub_pd(t, vec_p2);
@@ -1167,7 +1220,7 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				// printvec("t", t);
 
 				// double num = rrow[j] - t * dTemplMean;
-				__m128 numFloats = _mm_loadu_ps(&rrow[j*blockSize]);
+				__m128 numFloats = _mm_loadu_ps(&rrow[j]);
 				__m256d vec_num = _mm256_cvtps_pd(numFloats); // Expensive cast to doubles... can we prevent that somehow?
 				vec_num = _mm256_fnmadd_pd(t, vec_dTemplMean, vec_num);
 				// printvec("num", vec_num);
@@ -1177,10 +1230,10 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				// printvec("vec_wndMean", vec_wndMean);
 
 				// double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
-				__m256d vec_q0 = _mm256_loadu_pd(&q0[idx2 +j*blockSize]);
-				__m256d vec_q1 = _mm256_loadu_pd(&q1[idx2 +j*blockSize]);
-				__m256d vec_q2 = _mm256_loadu_pd(&q2[idx2 +j*blockSize]);
-				__m256d vec_q3 = _mm256_loadu_pd(&q3[idx2 +j*blockSize]);
+				__m256d vec_q0 = _mm256_loadu_pd(&q0[idx2 +j]);
+				__m256d vec_q1 = _mm256_loadu_pd(&q1[idx2 +j]);
+				__m256d vec_q2 = _mm256_loadu_pd(&q2[idx2 +j]);
+				__m256d vec_q3 = _mm256_loadu_pd(&q3[idx2 +j]);
 				__m256d vec_wndSum2 = _mm256_add_pd(vec_q0, vec_q3);
 				vec_wndSum2 = _mm256_sub_pd(vec_wndSum2, vec_q1);
 				vec_wndSum2 = _mm256_sub_pd(vec_wndSum2, vec_q2);
@@ -1225,7 +1278,6 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				// 	num = num > 0 ? 1 : -1;
 				// else
 				// 	num = 0;
-				// Not the most efficient but I do not care
 				vec_num = _mm256_or_pd(
 					_mm256_and_pd(vec_num_div_thresh,mask_threshold),
 				_mm256_or_pd(
@@ -1238,10 +1290,24 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 
 				// printvec("vec_num", vec_num);
 				__m128 result = _mm256_cvtpd_ps(vec_num);
-				__m128i clownMask = _mm_set1_epi32(matResult.cols - j*blockSize);
-				clownMask = _mm_max_epi32(zerosi, _mm_sub_epi32(clownMask, iota));
 
-				_mm_maskstore_ps(&rrow[j*blockSize], clownMask, result);
+				// This is to prevent overflows when the block size does not divide
+				// for example we have cols = 19, blocksize = 4
+				// So blocks = 4
+				// At the last iterations we have j = 4, and blocksize = 4
+				// So we are going to write at adresses j*4, j*4+1 ,j*4+2, j*4+3,
+				// which is not good, since addr j*4+3 is out of bounds
+				// To fix that we need to mask out any loads that happen outside the bounds
+				__m128i clownMask = _mm_set1_epi32(matResult.cols - j); // -1 is important
+				clownMask = _mm_sub_epi32(clownMask, iota);
+				clownMask = _mm_cmplt_epi32(zerosi, clownMask);
+				// print128_num( clownMask);
+				// printf("result: %f %f %f %f\n", rrow[j+0], rrow[j+1], rrow[j+2], rrow[j+3]);
+				// printf("result: %f %f %f %f\n", result[0], result[1], result[2], result[3]);
+
+				_mm_maskstore_ps(&rrow[j], clownMask, result);
+				// _mm_storeu_ps(&rrow[j], result);
+				// printf("After: %f %f %f %f\n", rrow[j], rrow[j + 1], rrow[j + 2], rrow[j + 3]);
 			}
 		}
 	}
