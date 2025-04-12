@@ -7,6 +7,7 @@
 #include <opencv2/imgproc/types_c.h>
 #include <smmintrin.h>
 #include <immintrin.h>
+#include <bits/fs_fwd.h>
 using namespace cv;
 using namespace std;
 #pragma once
@@ -379,6 +380,7 @@ CMatchToolDlg::CMatchToolDlg()
 	, m_dTolerance4 (-100)
 	, m_bStopLayer1(false)
 	, m_bToleranceRange(FALSE)
+    ,m_ckBitwiseNot(FALSE)
 {
 }
 
@@ -929,7 +931,6 @@ inline int IM_Conv (unsigned char* pCharKernel, unsigned char *pCharConv, int iL
 	}
 
 	if (times < 100) {
-		printf("SUM %d\n", Sum);
 		times++;
 	}
 
@@ -943,7 +944,10 @@ void printBytes(__m256i* vec) {
 	printf("\n");
 }
 
-
+static const char iotaArr64[64] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 };
+static const __m256i iota64 = *(__m256i*)&iotaArr64;
+static const int iotaArr8[8] = {0,1,2,3,4,5,6,7};
+static const __m256i iota8 = *(__m256i*)&iotaArr8;
 // 基於SSE的字節數據的乘法。
 // <param name="Kernel">需要卷積的核矩陣。 </param>
 // <param name="Conv">卷積矩陣。 </param>
@@ -954,8 +958,7 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 	__m256i SumV = _mm256_setzero_si256 ();
 	__m256i Zero = _mm256_setzero_si256 ();
 
-	static const char iotaArr[iBlockSize] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 };
-	const __m256i iota = *(__m256i*)&iotaArr;
+
 
 	for (int Y = 0; Y < iLength; Y += iBlockSize)
 	{
@@ -963,7 +966,7 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 		__m256i clownMask = _mm256_set1_epi8(diff);
 		// printf("1 %hhx\n", diff);
 		// printBytes(&clownMask);
-		clownMask = _mm256_sub_epi8(clownMask, iota);
+		clownMask = _mm256_sub_epi8(clownMask, iota64);
 		// printf("2\n");
 		// printBytes(&clownMask);
 
@@ -991,13 +994,25 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 	return Sum;
 }
 
+template<typename  T>
+void printMat(cv::Mat mat) {
+	for (int Y = 0; Y < mat.rows; Y++) {
+		for (int X = 0; X < mat.cols; X++) {
+			std::cout << mat.at<T>(Y, X) << " ";
+		}
+		printf("\n");
+	}
+}
+
 
 //#define ORG
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
-	if (true)
+	if (true) {
 		MatchTemplateInverted(matSrc, pTemplData, matResult, iLayer, bUseSIMD);
+		return;
+	}
 
 	if (m_ckSIMD && bUseSIMD)
 	{
@@ -1022,10 +1037,11 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 				{
 					r_sub_source += matSrc.cols;
 					r_template += matTemplate.cols;
-					*r_matResult = *r_matResult + IM_Conv_SIMD_AVX(r_template, r_sub_source, matTemplate.cols);
+					*r_matResult += IM_Conv(r_template, r_sub_source, matTemplate.cols);
 				}
 			}
 		}
+
 		//From ImageShop
 	}
 	else
@@ -1044,21 +1060,96 @@ void CMatchToolDlg::MatchTemplateInverted (cv::Mat& matSrc, s_TemplData* pTemplD
 {
 	if (m_ckSIMD && bUseSIMD)
 	{
+		// printf("SIMD\n");
 		//From ImageShop
 		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
 		matResult.create (matSrc.rows - matTemplate.rows + 1,matSrc.cols - matTemplate.cols + 1, CV_32FC1);
 		matResult.setTo (0);
 
-		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
+		// static const int iotaArr[8] = {0,1,2,3,4,5,6,7};
 
-		uchar* r_templ = matTemplate.ptr<uchar> (0);
-		for (int tr =0; tr < matTemplate.rows; tr++) {
-			for (int rr = 0; rr < matResult.rows * matResult.cols; rr++) {
-				float* r_result = matResult.ptr<float> (0);
-				uchar* r_src = matSrc.ptr<uchar> ( rr);
-				r_result[rr] += r_templ[tr] * r_src[tr];
+
+		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
+		if (false)
+			for (int rr = 0; rr < matResult.rows; rr++) {
+				auto* r_res = matResult.ptr<float> (rr);
+				for (int rc = 0; rc < matResult.cols; rc++) {
+					for (int tr = 0; tr < matTemplate.rows; tr++) {
+
+						auto* r_src = matSrc.ptr<uchar>(rr + tr);
+						auto* r_templ = matTemplate.ptr<uchar>(tr);
+
+						int blockSize = 32;
+						for (int tc = 0; tc < matTemplate.cols; tc+=blockSize) {
+							__m256i templ = _mm256_cvtepu8_epi16(_mm_loadu_epi8(r_templ + tc));
+							__m256i src = _mm256_cvtepu8_epi16(_mm_loadu_epi8(r_src + rc + tc ));
+							__m256i mult = _mm256_mullo_epi16(templ, src);
+
+							// __m256i vec =
+
+
+							r_res[rc] += r_templ[tc] * r_src[rc + tc];
+						}
+					}
+
+				}
 			}
-		}
+
+
+		if (true)
+			for(int tr = 0; tr < matTemplate.rows; tr++) {
+				uchar* r_templ = matTemplate.ptr<uchar> (tr);
+				for (int rr = 0; rr < matResult.cols; rr++) {
+					float* r_res = matResult.ptr<float> (rr);
+					uchar* r_src = matSrc.ptr<uchar> (tr + rr);
+					for (int tc = 0; tc < matTemplate.cols; tc++) {
+						int blockSize = 8;
+						int blocks = matResult.cols / blockSize;
+
+						__m256i vec_templ = _mm256_set1_epi32(r_templ[tc]);
+						for (int rc = 0; rc < matResult.cols; rc+=blockSize) {
+							__m256i vec_src = _mm256_cvtepu8_epi32(_mm_loadu_si64(r_src + tc + rc ));
+							__m256 vec_mul = _mm256_cvtepi32_ps(_mm256_mul_epi32(vec_src, vec_templ));
+							__m256 vec_res = _mm256_loadu_ps(r_res + rc);
+							__m256 vec_sum = _mm256_add_ps(vec_mul, vec_res);
+
+							__m256i mask = _mm256_set1_epi32 (rc);
+							mask = _mm256_add_epi32 (mask, iota8);
+							mask = _mm256_cmpgt_epi32 (_mm256_set1_epi32(matResult.cols), mask);
+
+							_mm256_maskstore_ps(r_res + rc, mask, vec_sum);
+							_mm256_storeu_ps(r_res + rc, vec_sum);
+							// r_res[rc] += r_templ[tc] * r_src[rc + tc];
+							// r_res[rc+1] += r_templ[tc] * r_src[rc + tc+1];
+							// r_res[rc+2] += r_templ[tc] * r_src[rc + tc+2];
+							// r_res[rc+3] += r_templ[tc] * r_src[rc + tc+3];
+							// r_res[rc+4] += r_templ[tc] * r_src[rc + tc+4];
+							// r_res[rc+5] += r_templ[tc] * r_src[rc + tc+5];
+							// r_res[rc+6] += r_templ[tc] * r_src[rc + tc+6];
+							// r_res[rc+7] += r_templ[tc] * r_src[rc + tc+7];
+						}
+					}
+				}
+			}
+
+		if (false)
+			for (int sr = 0; sr < matSrc.rows; sr++) {
+				uchar* r_src = matSrc.ptr<uchar> (sr);
+				for (int sc = 0; sc < matSrc.cols; sc++) {
+					for (int tr = max(0, sr - matResult.rows); tr < sr + 1 && tr < matTemplate.rows; tr++) {
+						uchar* r_templ = matTemplate.ptr<uchar> (tr);
+						int rr = sr - tr;
+						float* r_res = matResult.ptr<float> (rr);
+						for (int tc = max(0, sc - matResult.cols); tc < min(sc + 1, matTemplate.cols); tc++) {
+							int rc = sc - tc;
+							r_res[rc] += r_templ[tc] * r_src[sc];
+						}
+					}
+				}
+			}
+
+		// printf("\n");
+		// printMat<float>(matResult);
 	}
 	else
 		matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);

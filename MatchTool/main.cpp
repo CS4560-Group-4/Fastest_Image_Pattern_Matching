@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
     matcher->m_ckSIMD = TRUE;
-
+    matcher->m_ckBitwiseNot = FALSE;
 
     {
         auto t = Timer("match");
@@ -68,8 +68,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // cv::imshow("Output", src);
-    // cv::waitKey(0);
+    cv::imshow("Output", src);
+    cv::waitKey(0);
 
     return 0;
 }
