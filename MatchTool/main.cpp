@@ -2,7 +2,7 @@
 #include <iostream>
 
 int main() {
-    std::string src_path = "./Test Images/Src1.bmp";
+    std::string src_path = "./Test Images/Src10.bmp";
     // Very important to read the image in GRAYSCALE!
     cv::Mat src = cv::imread(src_path, IMREAD_GRAYSCALE);
     if(src.empty())
@@ -11,7 +11,7 @@ int main() {
         return 1;
     }
  
-    std::string dst_path = "./Test Images/Dst1.bmp";
+    std::string dst_path = "./Test Images/Dst10.jpg";
     cv::Mat dst = cv::imread(dst_path, IMREAD_GRAYSCALE);
     if(dst.empty())
     {
@@ -22,14 +22,19 @@ int main() {
 
     CMatchToolDlg* matcher = new CMatchToolDlg();
 
-    matcher->m_iMaxPos = 10;
+    matcher->m_iMaxPos = 300;
     matcher->m_dToleranceAngle = 180;
-
     matcher->m_matSrc = src;
     matcher->m_matDst = dst;
+
+    auto start = std::chrono::high_resolution_clock::now();
     
     matcher->LearnPattern();
     BOOL result = matcher->Match();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Time spent in machting: " << elapsed.count() << " seconds" << std::endl;
     
 
     cvtColor (src, src, CV_GRAY2BGR);
@@ -58,7 +63,7 @@ int main() {
         putText(src, str, data.ptCenter, FONT_HERSHEY_COMPLEX, 1,CV_RGB(0,255,0), 2);
     }
 
-    cv::imshow("Output", src);
+    //cv::imshow("Output", src);
     cv::waitKey(0);
 
     return 0;

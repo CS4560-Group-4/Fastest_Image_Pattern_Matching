@@ -13,207 +13,251 @@ using namespace std;
 #define FALSE 0
 #define TRUE 1
 
+#include <chrono>
+#include <map>
+#include <string>
+#include <iostream>
 
-struct s_TemplData
-{
-	vector<Mat> vecPyramid;
-	vector<Scalar> vecTemplMean;
-	vector<double> vecTemplNorm;
-	vector<double> vecInvArea;
-	vector<BOOL> vecResultEqual1;
-	BOOL bIsPatternLearned;
-	int iBorderColor;
-	void clear ()
-	{
-		vector<Mat> ().swap (vecPyramid);
-		vector<double> ().swap (vecTemplNorm);
-		vector<double> ().swap (vecInvArea);
-		vector<Scalar> ().swap (vecTemplMean);
-		vector<BOOL> ().swap (vecResultEqual1);
-	}
-	void resize (int iSize)
-	{
-		vecTemplMean.resize (iSize);
-		vecTemplNorm.resize (iSize, 0);
-		vecInvArea.resize (iSize, 1);
-		vecResultEqual1.resize (iSize, FALSE);
-	}
-	s_TemplData ()
-	{
-		bIsPatternLearned = FALSE;
-	}
+#define START_TIMER(funcName) \
+    auto start_##funcName = std::chrono::high_resolution_clock::now();
+
+#define END_TIMER(funcName) \
+    auto end_##funcName = std::chrono::high_resolution_clock::now(); \
+    auto duration_##funcName = std::chrono::duration_cast<std::chrono::microseconds>(end_##funcName - start_##funcName).count(); \
+    FunctionTimers[#funcName] += duration_##funcName;
+
+#define PRINT_TIMERS() \
+    for (const auto& timer : FunctionTimers) { \
+        std::cout << "Function " << timer.first << " took " << timer.second << " microseconds in total." << std::endl; \
+    }
+
+std::map<std::string, long long> FunctionTimers;
+
+struct s_TemplData {
+    vector<Mat> vecPyramid;
+    vector<Scalar> vecTemplMean;
+    vector<double> vecTemplNorm;
+    vector<double> vecInvArea;
+    vector<BOOL> vecResultEqual1;
+    BOOL bIsPatternLearned;
+    int iBorderColor;
+
+    void clear () // FUNCTION
+    {
+        START_TIMER(clear)
+        vector<Mat> ().swap (vecPyramid);
+        vector<double> ().swap (vecTemplNorm);
+        vector<double> ().swap (vecInvArea);
+        vector<Scalar> ().swap (vecTemplMean);
+        vector<BOOL> ().swap (vecResultEqual1);
+        END_TIMER(clear)
+    }
+
+    void resize (int iSize) // FUNCTION
+    {
+        START_TIMER(resize)
+        vecTemplMean.resize (iSize);
+        vecTemplNorm.resize (iSize, 0);
+        vecInvArea.resize (iSize, 1);
+        vecResultEqual1.resize (iSize, FALSE);
+        END_TIMER(resize)
+    }
+
+    s_TemplData () // FUNCTION
+    {
+        START_TIMER(s_TemplData)
+        bIsPatternLearned = FALSE;
+        END_TIMER(s_TemplData)
+    }
 };
 struct s_MatchParameter
 {
-	Point2d pt;
-	double dMatchScore;
-	double dMatchAngle;
-	//Mat matRotatedSrc;
-	Rect rectRoi;
-	double dAngleStart;
-	double dAngleEnd;
-	RotatedRect rectR;
-	Rect rectBounding;
-	BOOL bDelete;
+    Point2d pt;
+    double dMatchScore;
+    double dMatchAngle;
+    //Mat matRotatedSrc;
+    Rect rectRoi;
+    double dAngleStart;
+    double dAngleEnd;
+    RotatedRect rectR;
+    Rect rectBounding;
+    BOOL bDelete;
 
-	double vecResult[3][3];//for subpixel
-	int iMaxScoreIndex;//for subpixel
-	BOOL bPosOnBorder;
-	Point2d ptSubPixel;
-	double dNewAngle;
+    double vecResult[3][3];//for subpixel
+    int iMaxScoreIndex;//for subpixel
+    BOOL bPosOnBorder;
+    Point2d ptSubPixel;
+    double dNewAngle;
 
-	s_MatchParameter (Point2f ptMinMax, double dScore, double dAngle)//, Mat matRotatedSrc = Mat ())
-	{
-		pt = ptMinMax;
-		dMatchScore = dScore;
-		dMatchAngle = dAngle;
+    s_MatchParameter (Point2f ptMinMax, double dScore, double dAngle)//, Mat matRotatedSrc = Mat ())
+    {
+        START_TIMER(s_MatchParameter_constructor)
+        pt = ptMinMax;
+        dMatchScore = dScore;
+        dMatchAngle = dAngle;
 
-		bDelete = FALSE;
-		dNewAngle = 0.0;
+        bDelete = FALSE;
+        dNewAngle = 0.0;
 
-		bPosOnBorder = FALSE;
-	}
-	s_MatchParameter ()
-	{
-		double dMatchScore = 0;
-		double dMatchAngle = 0;
-	}
-	~s_MatchParameter ()
-	{
-
-	}
+        bPosOnBorder = FALSE;
+        END_TIMER(s_MatchParameter_constructor)
+    }
+    s_MatchParameter ()
+    {
+        START_TIMER(s_MatchParameter_default_constructor)
+        double dMatchScore = 0;
+        double dMatchAngle = 0;
+        END_TIMER(s_MatchParameter_default_constructor)
+    }
+    ~s_MatchParameter ()
+    {
+        START_TIMER(s_MatchParameter_destructor)
+        END_TIMER(s_MatchParameter_destructor)
+    }
 };
 struct s_SingleTargetMatch
 {
-	Point2d ptLT, ptRT, ptRB, ptLB, ptCenter;
-	double dMatchedAngle;
-	double dMatchScore;
+    Point2d ptLT, ptRT, ptRB, ptLB, ptCenter;
+    double dMatchedAngle;
+    double dMatchScore;
 };
+
 struct s_BlockMax
 {
-	struct Block 
-	{
-		Rect rect;
-		double dMax;
-		Point ptMaxLoc;
-		Block ()
-		{}
-		Block (Rect rect_, double dMax_, Point ptMaxLoc_)
-		{
-			rect = rect_;
-			dMax = dMax_;
-			ptMaxLoc = ptMaxLoc_;
-		}
-	};
-	s_BlockMax ()
-	{}
-	vector<Block> vecBlock;
-	Mat matSrc;
-	s_BlockMax (Mat matSrc_, Size sizeTemplate)
-	{
-		matSrc = matSrc_;
-		//將matSrc 拆成數個block，分別計算最大值
-		int iBlockW = sizeTemplate.width * 2;
-		int iBlockH = sizeTemplate.height * 2;
+    struct Block 
+    {
+        Rect rect;
+        double dMax;
+        Point ptMaxLoc;
+        Block ()
+        {}
+        Block (Rect rect_, double dMax_, Point ptMaxLoc_)
+        {
+            rect = rect_;
+            dMax = dMax_;
+            ptMaxLoc = ptMaxLoc_;
+        }
+    };
+    s_BlockMax ()
+    {}
+    vector<Block> vecBlock;
+    Mat matSrc;
+    s_BlockMax (Mat matSrc_, Size sizeTemplate)
+    {
+        START_TIMER(s_BlockMax_constructor)
+        matSrc = matSrc_;
+        //將matSrc 拆成數個block，分別計算最大值
+        int iBlockW = sizeTemplate.width * 2;
+        int iBlockH = sizeTemplate.height * 2;
 
-		int iCol = matSrc.cols / iBlockW;
-		BOOL bHResidue = matSrc.cols % iBlockW != 0;
+        int iCol = matSrc.cols / iBlockW;
+        BOOL bHResidue = matSrc.cols % iBlockW != 0;
 
-		int iRow = matSrc.rows / iBlockH;
-		BOOL bVResidue = matSrc.rows % iBlockH != 0;
+        int iRow = matSrc.rows / iBlockH;
+        BOOL bVResidue = matSrc.rows % iBlockH != 0;
 
-		if (iCol == 0 || iRow == 0)
-		{
-			vecBlock.clear ();
-			return;
-		}
+        if (iCol == 0 || iRow == 0)
+        {
+            vecBlock.clear ();
+            END_TIMER(s_BlockMax_constructor)
+            return;
+        }
 
-		vecBlock.resize (iCol * iRow);
-		int iCount = 0;
-		for (int y = 0; y < iRow ; y++)
-		{
-			for (int x = 0; x < iCol; x++)
-			{
-				Rect rectBlock (x * iBlockW, y * iBlockH, iBlockW, iBlockH);
-				vecBlock[iCount].rect = rectBlock;
-				minMaxLoc (matSrc (rectBlock), 0, &vecBlock[iCount].dMax, 0, &vecBlock[iCount].ptMaxLoc);
-				vecBlock[iCount].ptMaxLoc += rectBlock.tl ();
-				iCount++;
-			}
-		}
-		if (bHResidue && bVResidue)
-		{
-			Rect rectRight (iCol * iBlockW, 0, matSrc.cols - iCol * iBlockW, matSrc.rows);
-			Block blockRight;
-			blockRight.rect = rectRight;
-			minMaxLoc (matSrc (rectRight), 0, &blockRight.dMax, 0, &blockRight.ptMaxLoc);
-			blockRight.ptMaxLoc += rectRight.tl ();
-			vecBlock.push_back (blockRight);
+        vecBlock.resize (iCol * iRow);
+        int iCount = 0;
+        for (int y = 0; y < iRow ; y++)
+        {
+            for (int x = 0; x < iCol; x++)
+            {
+                Rect rectBlock (x * iBlockW, y * iBlockH, iBlockW, iBlockH);
+                vecBlock[iCount].rect = rectBlock;
+                minMaxLoc (matSrc (rectBlock), 0, &vecBlock[iCount].dMax, 0, &vecBlock[iCount].ptMaxLoc);
+                vecBlock[iCount].ptMaxLoc += rectBlock.tl ();
+                iCount++;
+            }
+        }
+        if (bHResidue && bVResidue)
+        {
+            Rect rectRight (iCol * iBlockW, 0, matSrc.cols - iCol * iBlockW, matSrc.rows);
+            Block blockRight;
+            blockRight.rect = rectRight;
+            minMaxLoc (matSrc (rectRight), 0, &blockRight.dMax, 0, &blockRight.ptMaxLoc);
+            blockRight.ptMaxLoc += rectRight.tl ();
+            vecBlock.push_back (blockRight);
 
-			Rect rectBottom (0, iRow * iBlockH, iCol * iBlockW, matSrc.rows - iRow * iBlockH);
-			Block blockBottom;
-			blockBottom.rect = rectBottom;
-			minMaxLoc (matSrc (rectBottom), 0, &blockBottom.dMax, 0, &blockBottom.ptMaxLoc);
-			blockBottom.ptMaxLoc += rectBottom.tl ();
-			vecBlock.push_back (blockBottom);
-		}
-		else if (bHResidue)
-		{
-			Rect rectRight (iCol * iBlockW, 0, matSrc.cols - iCol * iBlockW, matSrc.rows);
-			Block blockRight;
-			blockRight.rect = rectRight;
-			minMaxLoc (matSrc (rectRight), 0, &blockRight.dMax, 0, &blockRight.ptMaxLoc);
-			blockRight.ptMaxLoc += rectRight.tl ();
-			vecBlock.push_back (blockRight);
-		}
-		else
-		{
-			Rect rectBottom (0, iRow * iBlockH, matSrc.cols, matSrc.rows - iRow * iBlockH);
-			Block blockBottom;
-			blockBottom.rect = rectBottom;
-			minMaxLoc (matSrc (rectBottom), 0, &blockBottom.dMax, 0, &blockBottom.ptMaxLoc);
-			blockBottom.ptMaxLoc += rectBottom.tl ();
-			vecBlock.push_back (blockBottom);
-		}
-	}
-	void UpdateMax (Rect rectIgnore)
-	{
-		if (vecBlock.size () == 0)
-			return;
-		//找出所有跟rectIgnore交集的block
-		int iSize = vecBlock.size ();
-		for (int i = 0; i < iSize ; i++)
-		{
-			Rect rectIntersec = rectIgnore & vecBlock[i].rect;
-			//無交集
-			if (rectIntersec.width == 0 && rectIntersec.height == 0)
-				continue;
-			//有交集，更新極值和極值位置
-			minMaxLoc (matSrc (vecBlock[i].rect), 0, &vecBlock[i].dMax, 0, &vecBlock[i].ptMaxLoc);
-			vecBlock[i].ptMaxLoc += vecBlock[i].rect.tl ();
-		}
-	}
-	void GetMaxValueLoc (double& dMax, Point& ptMaxLoc)
-	{
-		int iSize = vecBlock.size ();
-		if (iSize == 0)
-		{
-			minMaxLoc (matSrc, 0, &dMax, 0, &ptMaxLoc);
-			return;
-		}
-		//從block中找最大值
-		int iIndex = 0;
-		dMax = vecBlock[0].dMax;
-		for (int i = 1 ; i < iSize; i++)
-		{
-			if (vecBlock[i].dMax >= dMax)
-			{
-				iIndex = i;
-				dMax = vecBlock[i].dMax;
-			}
-		}
-		ptMaxLoc = vecBlock[iIndex].ptMaxLoc;
-	}
+            Rect rectBottom (0, iRow * iBlockH, iCol * iBlockW, matSrc.rows - iRow * iBlockH);
+            Block blockBottom;
+            blockBottom.rect = rectBottom;
+            minMaxLoc (matSrc (rectBottom), 0, &blockBottom.dMax, 0, &blockBottom.ptMaxLoc);
+            blockBottom.ptMaxLoc += rectBottom.tl ();
+            vecBlock.push_back (blockBottom);
+        }
+        else if (bHResidue)
+        {
+            Rect rectRight (iCol * iBlockW, 0, matSrc.cols - iCol * iBlockW, matSrc.rows);
+            Block blockRight;
+            blockRight.rect = rectRight;
+            minMaxLoc (matSrc (rectRight), 0, &blockRight.dMax, 0, &blockRight.ptMaxLoc);
+            blockRight.ptMaxLoc += rectRight.tl ();
+            vecBlock.push_back (blockRight);
+        }
+        else
+        {
+            Rect rectBottom (0, iRow * iBlockH, matSrc.cols, matSrc.rows - iRow * iBlockH);
+            Block blockBottom;
+            blockBottom.rect = rectBottom;
+            minMaxLoc (matSrc (rectBottom), 0, &blockBottom.dMax, 0, &blockBottom.ptMaxLoc);
+            blockBottom.ptMaxLoc += rectBottom.tl ();
+            vecBlock.push_back (blockBottom);
+        }
+        END_TIMER(s_BlockMax_constructor)
+    }
+    void UpdateMax (Rect rectIgnore)
+    {
+        START_TIMER(UpdateMax)
+        if (vecBlock.size () == 0)
+        {
+            END_TIMER(UpdateMax)
+            return;
+        }
+        //找出所有跟rectIgnore交集的block
+        int iSize = vecBlock.size ();
+        for (int i = 0; i < iSize ; i++)
+        {
+            Rect rectIntersec = rectIgnore & vecBlock[i].rect;
+            //無交集
+            if (rectIntersec.width == 0 && rectIntersec.height == 0)
+                continue;
+            //有交集，更新極值和極值位置
+            minMaxLoc (matSrc (vecBlock[i].rect), 0, &vecBlock[i].dMax, 0, &vecBlock[i].ptMaxLoc);
+            vecBlock[i].ptMaxLoc += vecBlock[i].rect.tl ();
+        }
+        END_TIMER(UpdateMax)
+    }
+    void GetMaxValueLoc (double& dMax, Point& ptMaxLoc)
+    {
+        START_TIMER(GetMaxValueLoc)
+        int iSize = vecBlock.size ();
+        if (iSize == 0)
+        {
+            minMaxLoc (matSrc, 0, &dMax, 0, &ptMaxLoc);
+            END_TIMER(GetMaxValueLoc)
+            return;
+        }
+        //從block中找最大值
+        int iIndex = 0;
+        dMax = vecBlock[0].dMax;
+        for (int i = 1 ; i < iSize; i++)
+        {
+            if (vecBlock[i].dMax >= dMax)
+            {
+                iIndex = i;
+                dMax = vecBlock[i].dMax;
+            }
+        }
+        ptMaxLoc = vecBlock[iIndex].ptMaxLoc;
+        END_TIMER(GetMaxValueLoc)
+    }
 };
 
 
@@ -284,7 +328,7 @@ private:
 #define D2R (CV_PI / 180.0)
 #define R2D (180.0 / CV_PI)
 #define MATCH_CANDIDATE_NUM 5
-
+// The file contains 47 function definitions.
 #define SUBITEM_INDEX 0
 #define SUBITEM_SCORE 1
 #define SUBITEM_ANGLE 2
@@ -297,19 +341,50 @@ private:
 
 #define FONT_SIZE 115
 // CMatchToolDlg 對話方塊
-bool compareScoreBig2Small (const s_MatchParameter& lhs, const s_MatchParameter& rhs) { return  lhs.dMatchScore > rhs.dMatchScore; }
-bool comparePtWithAngle (const pair<Point2f, double> lhs, const pair<Point2f, double> rhs) { return lhs.second < rhs.second; }
+bool compareScoreBig2Small (const s_MatchParameter& lhs, const s_MatchParameter& rhs) 
+{ 
+    START_TIMER(compareScoreBig2Small)
+    bool result = lhs.dMatchScore > rhs.dMatchScore; 
+    END_TIMER(compareScoreBig2Small)
+    return result; 
+}
+
+bool comparePtWithAngle (const pair<Point2f, double> lhs, const pair<Point2f, double> rhs) 
+{ 
+    START_TIMER(comparePtWithAngle)
+    bool result = lhs.second < rhs.second; 
+    END_TIMER(comparePtWithAngle)
+    return result; 
+}
+
 bool compareMatchResultByPos (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs)
 {
-	double dTol = 2;
-	if (fabs (lhs.ptCenter.y - rhs.ptCenter.y) <= dTol)
-		return lhs.ptCenter.x < rhs.ptCenter.x;
-	else
-		return lhs.ptCenter.y < rhs.ptCenter.y;
+    START_TIMER(compareMatchResultByPos)
+    double dTol = 2;
+    bool result;
+    if (fabs (lhs.ptCenter.y - rhs.ptCenter.y) <= dTol)
+        result = lhs.ptCenter.x < rhs.ptCenter.x;
+    else
+        result = lhs.ptCenter.y < rhs.ptCenter.y;
+    END_TIMER(compareMatchResultByPos)
+    return result;
+}
 
-};
-bool compareMatchResultByScore (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.dMatchScore > rhs.dMatchScore; }
-bool compareMatchResultByPosX (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) { return lhs.ptCenter.x < rhs.ptCenter.x; }
+bool compareMatchResultByScore (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) 
+{ 
+    START_TIMER(compareMatchResultByScore)
+    bool result = lhs.dMatchScore > rhs.dMatchScore; 
+    END_TIMER(compareMatchResultByScore)
+    return result; 
+}
+
+bool compareMatchResultByPosX (const s_SingleTargetMatch& lhs, const s_SingleTargetMatch& rhs) 
+{ 
+    START_TIMER(compareMatchResultByPosX)
+    bool result = lhs.ptCenter.x < rhs.ptCenter.x; 
+    END_TIMER(compareMatchResultByPosX)
+    return result; 
+}
 
 
 void MouseCall (int event, int x, int y, int flag, void* pUserData);
@@ -346,65 +421,83 @@ CMatchToolDlg::CMatchToolDlg()
 
 void CMatchToolDlg::LearnPattern ()
 {
-	m_TemplData.clear ();
+    START_TIMER(LearnPattern)
+    m_TemplData.clear ();
 
-	int iTopLayer = GetTopLayer (&m_matDst, (int)sqrt ((double)m_iMinReduceArea));
-	buildPyramid (m_matDst, m_TemplData.vecPyramid, iTopLayer);
-	s_TemplData* templData = &m_TemplData;
-	templData->iBorderColor = mean (m_matDst).val[0] < 128 ? 255 : 0;
-	int iSize = templData->vecPyramid.size ();
-	templData->resize (iSize);
+    int iTopLayer = GetTopLayer (&m_matDst, (int)sqrt ((double)m_iMinReduceArea));
+    buildPyramid (m_matDst, m_TemplData.vecPyramid, iTopLayer);
+    s_TemplData* templData = &m_TemplData;
+    templData->iBorderColor = mean (m_matDst).val[0] < 128 ? 255 : 0;
+    int iSize = templData->vecPyramid.size ();
+    templData->resize (iSize);
 
-	for (int i = 0; i < iSize; i++)
-	{
-		double invArea = 1. / ((double)templData->vecPyramid[i].rows * templData->vecPyramid[i].cols);
-		Scalar templMean, templSdv;
-		double templNorm = 0, templSum2 = 0;
+    for (int i = 0; i < iSize; i++)
+    {
+        START_TIMER(LearnPattern_Loop)
+        double invArea = 1. / ((double)templData->vecPyramid[i].rows * templData->vecPyramid[i].cols);
+        Scalar templMean, templSdv;
+        double templNorm = 0, templSum2 = 0;
 
-		meanStdDev (templData->vecPyramid[i], templMean, templSdv);
-		templNorm = templSdv[0] * templSdv[0] + templSdv[1] * templSdv[1] + templSdv[2] * templSdv[2] + templSdv[3] * templSdv[3];
+        meanStdDev (templData->vecPyramid[i], templMean, templSdv);
+        templNorm = templSdv[0] * templSdv[0] + templSdv[1] * templSdv[1] + templSdv[2] * templSdv[2] + templSdv[3] * templSdv[3];
 
-		if (templNorm < DBL_EPSILON)
-		{
-			templData->vecResultEqual1[i] = TRUE;
-		}
-		templSum2 = templNorm + templMean[0] * templMean[0] + templMean[1] * templMean[1] + templMean[2] * templMean[2] + templMean[3] * templMean[3];
+        if (templNorm < DBL_EPSILON)
+        {
+            templData->vecResultEqual1[i] = TRUE;
+        }
+        templSum2 = templNorm + templMean[0] * templMean[0] + templMean[1] * templMean[1] + templMean[2] * templMean[2] + templMean[3] * templMean[3];
 
+        templSum2 /= invArea;
+        templNorm = std::sqrt (templNorm);
+        templNorm /= std::sqrt (invArea); // care of accuracy here
 
-		templSum2 /= invArea;
-		templNorm = std::sqrt (templNorm);
-		templNorm /= std::sqrt (invArea); // care of accuracy here
-
-
-		templData->vecInvArea[i] = invArea;
-		templData->vecTemplMean[i] = templMean;
-		templData->vecTemplNorm[i] = templNorm;
-	}
-	templData->bIsPatternLearned = TRUE;
+        templData->vecInvArea[i] = invArea;
+        templData->vecTemplMean[i] = templMean;
+        templData->vecTemplNorm[i] = templNorm;
+        END_TIMER(LearnPattern_Loop)
+    }
+    templData->bIsPatternLearned = TRUE;
+    END_TIMER(LearnPattern)
 }
 
 int CMatchToolDlg::GetTopLayer (Mat* matTempl, int iMinDstLength)
 {
-	int iTopLayer = 0;
-	int iMinReduceArea = iMinDstLength * iMinDstLength;
-	int iArea = matTempl->cols * matTempl->rows;
-	while (iArea > iMinReduceArea)
-	{
-		iArea /= 4;
-		iTopLayer++;
-	}
-	return iTopLayer;
+    START_TIMER(GetTopLayer)
+    int iTopLayer = 0;
+    int iMinReduceArea = iMinDstLength * iMinDstLength;
+    int iArea = matTempl->cols * matTempl->rows;
+    while (iArea > iMinReduceArea)
+    {
+        iArea /= 4;
+        iTopLayer++;
+    }
+    END_TIMER(GetTopLayer)
+    return iTopLayer;
 }
 
 
 
 //OCR
-bool comparePosWithY (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs) { return lhs.first.y < rhs.first.y; }
-bool comparePosWithX (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs){return lhs.first.x < rhs.first.x;}
+bool comparePosWithY (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs) 
+{ 
+    START_TIMER(comparePosWithY)
+    bool result = lhs.first.y < rhs.first.y; 
+    END_TIMER(comparePosWithY)
+    return result; 
+}
+
+bool comparePosWithX (const pair<Point2d, char>& lhs, const pair<Point2d, char>& rhs)
+{
+    START_TIMER(comparePosWithX)
+    bool result = lhs.first.x < rhs.first.x;
+    END_TIMER(comparePosWithX)
+    return result;
+}
 //OCR
 
 BOOL CMatchToolDlg::Match ()
 {
+    START_TIMER(Match);
 	if (m_matSrc.empty () || m_matDst.empty ())
 		return FALSE;
 	if ((m_matDst.cols < m_matSrc.cols && m_matDst.rows > m_matSrc.rows) || (m_matDst.cols > m_matSrc.cols && m_matDst.rows < m_matSrc.rows))
@@ -416,6 +509,7 @@ BOOL CMatchToolDlg::Match ()
 	double d1 = clock ();
 	//決定金字塔層數 總共為1 + iLayer層
 	int iTopLayer = GetTopLayer (&m_matDst, (int)sqrt ((double)m_iMinReduceArea));
+
 	//建立金字塔
 	vector<Mat> vecMatSrcPyr;
 	if (m_ckBitwiseNot)
@@ -745,12 +839,15 @@ BOOL CMatchToolDlg::Match ()
 			break;
 	}
 	//sort (m_vecSingleTargetData.begin (), m_vecSingleTargetData.end (), compareMatchResultByPosX);
-	
+
+    END_TIMER(Match);
+    PRINT_TIMERS();
 	return (int)m_vecSingleTargetData.size ();
 }
 BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNewX, double* dNewY, double* dNewAngle, double dAngleStep, int iMaxScoreIndex)
 {
 	//Az=S, (A.T)Az=(A.T)s, z = ((A.T)A).inv (A.T)s
+    START_TIMER(SubPixEsimation);
 
 	Mat matA (27, 10, CV_64F);
 	Mat matZ (10, 1, CV_64F);
@@ -819,6 +916,7 @@ BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNew
 	*dNewX = matDelta.at<double> (0, 0);
 	*dNewY = matDelta.at<double> (1, 0);
 	*dNewAngle = matDelta.at<double> (2, 0) * R2D;
+    END_TIMER(SubPixEsimation);
 	return TRUE;
 }
 
@@ -826,9 +924,11 @@ BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNew
 // 4個有符號的32位的數據相加的和。
 inline int _mm_hsum_epi32 (__m128i V)      // V3 V2 V1 V0
 {
+    START_TIMER(_mm_hsum_epi32);
 	// 實測這個速度要快些，_mm_extract_epi32最慢。
 	__m128i T = _mm_add_epi32 (V, _mm_srli_si128 (V, 8));  // V3+V1   V2+V0  V1  V0  
 	T = _mm_add_epi32 (T, _mm_srli_si128 (T, 4));    // V3+V1+V2+V0  V2+V0+V1 V1+V0 V0 
+    END_TIMER(_mm_hsum_epi32);
 	return _mm_cvtsi128_si32 (T);       // 提取低位 
 }
 // 基於SSE的字節數據的乘法。
@@ -837,6 +937,7 @@ inline int _mm_hsum_epi32 (__m128i V)      // V3 V2 V1 V0
 // <param name="Length">矩陣所有元素的長度。 </param>
 inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
 {
+    START_TIMER(IM_Conv_SIMD);
 	const int iBlockSize = 16, Block = iLength / iBlockSize;
 	__m128i SumV = _mm_setzero_si128 ();
 	__m128i Zero = _mm_setzero_si128 ();
@@ -856,12 +957,14 @@ inline int IM_Conv_SIMD (unsigned char* pCharKernel, unsigned char *pCharConv, i
 	{
 		Sum += pCharKernel[Y] * pCharConv[Y];
 	}
+    END_TIMER(IM_Conv_SIMD);
 	return Sum;
 }
 //#define ORG
 
 void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
 {
+    START_TIMER(MatchTemplate);
 	if (m_ckSIMD && bUseSIMD)
 	{
 		//From ImageShop
@@ -896,9 +999,11 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 	double dMaxValue;
 	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
 	CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
+    END_TIMER(MatchTemplate);
 }
 void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
 {
+    START_TIMER(GetRotatedROI);
 	double dAngle_radian = dAngle * D2R;
 	Point2f ptC ((matSrc.cols - 1) / 2.0f, (matSrc.rows - 1) / 2.0f);
 	Point2f ptLT_rotate = ptRotatePt2f (ptLT, ptC, dAngle_radian);
@@ -913,9 +1018,11 @@ void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double 
 	
 	//Debug
 	warpAffine (matSrc, matROI, rMat, sizePadding);
+    END_TIMER(GetRotatedROI);
 }
 void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
 {
+    START_TIMER(CCOEFF_Denominator);
 	if (pTemplData->vecResultEqual1[iLayer])
 	{
 		matResult = Scalar::all (1);
@@ -985,9 +1092,11 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 			rrow[j] = (float)num;
 		}
 	}
+    END_TIMER(CCOEFF_Denominator);
 }
 Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAngle)
 {
+    START_TIMER(GetBestRotationSize);
 	double dRAngle_radian = dRAngle * D2R;
 	Point ptLT (0, 0), ptLB (0, sizeSrc.height - 1), ptRB (sizeSrc.width - 1, sizeSrc.height - 1), ptRT (sizeSrc.width - 1, 0);
 	Point2f ptCenter ((sizeSrc.width - 1) / 2.0f, (sizeSrc.height - 1) / 2.0f);
@@ -1049,10 +1158,12 @@ Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAn
 	if (bWrongSize)
 		sizeRet = Size (int (fRightX - fLeftX + 0.5), int (fTopY - fBottomY + 0.5));
 
+    END_TIMER(GetBestRotationSize);
 	return sizeRet;
 }
 Point2f CMatchToolDlg::ptRotatePt2f (Point2f ptInput, Point2f ptOrg, double dAngle)
 {
+    START_TIMER(ptRotatePt2f);
 	double dWidth = ptOrg.x * 2;
 	double dHeight = ptOrg.y * 2;
 	double dY1 = dHeight - ptInput.y, dY2 = dHeight - ptOrg.y;
@@ -1061,10 +1172,12 @@ Point2f CMatchToolDlg::ptRotatePt2f (Point2f ptInput, Point2f ptOrg, double dAng
 	double dY = (ptInput.x - ptOrg.x) * sin (dAngle) + (dY1 - ptOrg.y) * cos (dAngle) + dY2;
 
 	dY = -dY + dHeight;
+    END_TIMER(ptRotatePt2f);
 	return Point2f ((float)dX, (float)dY);
 }
 void CMatchToolDlg::FilterWithScore (vector<s_MatchParameter>* vec, double dScore)
 {
+    START_TIMER(FilterWithScore);
 	sort (vec->begin (), vec->end (), compareScoreBig2Small);
 	int iSize = vec->size (), iIndexDelete = iSize + 1;
 	for (int i = 0; i < iSize; i++)
@@ -1078,10 +1191,12 @@ void CMatchToolDlg::FilterWithScore (vector<s_MatchParameter>* vec, double dScor
 	if (iIndexDelete == iSize + 1)//沒有任何元素小於dScore
 		return;
 	vec->erase (vec->begin () + iIndexDelete, vec->end ());
+    END_TIMER(FilterWithScore);
 	return;
 }
 void CMatchToolDlg::FilterWithRotatedRect (vector<s_MatchParameter>* vec, int iMethod, double dMaxOverLap)
 {
+    START_TIMER(FilterWithRotatedRect);
 	int iMatchSize = (int)vec->size ();
 	RotatedRect rect1, rect2;
 	for (int i = 0; i < iMatchSize - 1; i++)
@@ -1139,9 +1254,11 @@ void CMatchToolDlg::FilterWithRotatedRect (vector<s_MatchParameter>* vec, int iM
 		else
 			++it;
 	}
+    END_TIMER(FilterWithRotatedRect);
 }
 Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double& dMaxValue, double dMaxOverlap)
 {
+    START_TIMER(GetNextMaxLoc);
 	//比對到的區域完全不重疊 : +-一個樣板寬高
 	//int iStartX = ptMaxLoc.x - iTemplateW;
 	//int iStartY = ptMaxLoc.y - iTemplateH;
@@ -1163,10 +1280,12 @@ Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTe
 	//得到下一個最大值
 	Point ptNewMaxLoc;
 	minMaxLoc (matResult, 0, &dMaxValue, 0, &ptNewMaxLoc);
+    END_TIMER(GetNextMaxLoc);
 	return ptNewMaxLoc;
 }
 Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTemplate, double & dMaxValue, double dMaxOverlap, s_BlockMax & blockMax)
 {
+    START_TIMER(GetNextMaxLoc);
 	//比對到的區域需考慮重疊比例
 	int iStartX = int (ptMaxLoc.x - sizeTemplate.width * (1 - dMaxOverlap));
 	int iStartY = int (ptMaxLoc.y - sizeTemplate.height * (1 - dMaxOverlap));
@@ -1177,10 +1296,12 @@ Point CMatchToolDlg::GetNextMaxLoc (Mat & matResult, Point ptMaxLoc, Size sizeTe
 	blockMax.UpdateMax (rectIgnore);
 	Point ptReturn;
 	blockMax.GetMaxValueLoc (dMaxValue, ptReturn);
+    END_TIMER(GetNextMaxLoc);
 	return ptReturn;
 }
 void CMatchToolDlg::SortPtWithCenter (vector<Point2f>& vecSort)
 {
+    START_TIMER(SortPtWithCenter);
 	int iSize = (int)vecSort.size ();
 	Point2f ptCenter;
 	for (int i = 0; i < iSize; i++)
@@ -1217,4 +1338,6 @@ void CMatchToolDlg::SortPtWithCenter (vector<Point2f>& vecSort)
 	sort (vecPtAngle.begin (), vecPtAngle.end (), comparePtWithAngle);
 	for (int i = 0; i < iSize; i++)
 		vecSort[i] = vecPtAngle[i].first;
+    
+    END_TIMER(SortPtWithCenter);
 }
