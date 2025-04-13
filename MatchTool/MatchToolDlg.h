@@ -19,7 +19,8 @@ using namespace std;
 #include <iostream>
 
 #define START_TIMER(funcName) \
-    auto start_##funcName = std::chrono::high_resolution_clock::now();
+    auto start_##funcName = std::chrono::high_resolution_clock::now(); \
+    FunctionCallCounts[#funcName]++;
 
 #define END_TIMER(funcName) \
     auto end_##funcName = std::chrono::high_resolution_clock::now(); \
@@ -28,10 +29,12 @@ using namespace std;
 
 #define PRINT_TIMERS() \
     for (const auto& timer : FunctionTimers) { \
-        std::cout << "Function " << timer.first << " took " << timer.second << " microseconds in total." << std::endl; \
+        std::cout << timer.first << " & " << FunctionCallCounts[timer.first] << " & " \
+                << timer.second  << " \\\\" << std::endl; \
     }
 
 std::map<std::string, long long> FunctionTimers;
+std::map<std::string, int> FunctionCallCounts;
 
 struct s_TemplData {
     vector<Mat> vecPyramid;
