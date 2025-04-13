@@ -68,8 +68,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    cv::imshow("Output", src);
-    cv::waitKey(0);
+//    cv::imshow("Output", src);
+//    cv::waitKey(0);
 
     return 0;
 }

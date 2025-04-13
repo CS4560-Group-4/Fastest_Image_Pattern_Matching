@@ -16,6 +16,7 @@ using namespace std;
 #define FALSE 0
 #define TRUE 1
 
+
 class Timer {
 	private:
 		std::string name;
@@ -289,9 +290,9 @@ private:
 	                                    vector<double> vecLayerScore, Point2f ptCenter, int iTopLayer, int iDstW,
 	                                    int iDstH);
 
-	void MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD);
+	void MatchTemplateBase (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD);
 
-	void MatchTemplateInverted(cv::Mat &matSrc, s_TemplData *pTemplData, cv::Mat &matResult, int iLayer,
+	void MatchTemplateChanged(cv::Mat &matSrc, s_TemplData *pTemplData, cv::Mat &matResult, int iLayer,
 	                           uint8_t bUseSIMD);
 
 	void GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI);
@@ -461,7 +462,7 @@ vector<s_MatchParameter> CMatchToolDlg::GetMatchCandidates(vector<Mat>  vecMatSr
 		matR.at<double> (1, 2) += fTranslationY;
 		warpAffine (vecMatSrcPyr[iTopLayer], matRotatedSrc, matR, sizeBest, INTER_LINEAR, BORDER_CONSTANT, Scalar (pTemplData->iBorderColor));
 
-		MatchTemplate (matRotatedSrc, pTemplData, matResult, iTopLayer, FALSE);
+		MatchTemplateBase (matRotatedSrc, pTemplData, matResult, iTopLayer, FALSE);
 
 		if (bCalMaxByBlock)
 		{
@@ -584,7 +585,7 @@ vector<s_MatchParameter> CMatchToolDlg::GetMatches(vector<s_MatchParameter> vecM
 					double dMaxValue = 0;
 					Point ptMaxLoc;
 					GetRotatedROI (vecMatSrcPyr[iLayer], pTemplData->vecPyramid[iLayer].size (), ptLT * 2, vecAngles[j], matRotatedSrc);
-					MatchTemplate (matRotatedSrc, pTemplData, matResult, iLayer, TRUE);
+					MatchTemplateBase (matRotatedSrc, pTemplData, matResult, iLayer, TRUE);
 					//matchTemplate (matRotatedSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCOEFF_NORMED);
 					minMaxLoc (matResult, 0, &dMaxValue, 0, &ptMaxLoc);
 					vecNewMatchParameter[j] = s_MatchParameter (ptMaxLoc, dMaxValue, vecAngles[j]);
@@ -874,10 +875,12 @@ BOOL CMatchToolDlg::SubPixEsimation (vector<s_MatchParameter>* vec, double* dNew
 inline int _mm_hsum_epi32 (__m128i V)      // V3 V2 V1 V0
 {
 	// 實測這個速度要快些，_mm_extract_epi32最慢。
-	__m128i T = _mm_add_epi32 (V, _mm_srli_si128 (V, 8));  // V3+V1   V2+V0  V1  V0  
+	__m128i T = _mm_add_epi32 (V, _mm_srli_si128 (V, 8));  // V3+V1   V2+V0  V1  V0
 	T = _mm_add_epi32 (T, _mm_srli_si128 (T, 4));    // V3+V1+V2+V0  V2+V0+V1 V1+V0 V0 
 	return _mm_cvtsi128_si32 (T);       // 提取低位 
 }
+
+
 
 int times =  0;
 
@@ -939,8 +942,27 @@ inline int IM_Conv (unsigned char* pCharKernel, unsigned char *pCharConv, int iL
 
 void printBytes(__m256i* vec) {
 	for (int Y = 0; Y < 32; Y++) {
+		printf("%02hhd ", Y);
+	}
+	printf("\n");
+
+	for (int Y = 0; Y < 32; Y++) {
 		printf("%02hhx ", ((char *)vec)[Y]);
 	}
+	printf("\n");
+	printf("\n");
+}
+
+void printBytes128(__m128i* vec) {
+	for (int Y = 0; Y < 16; Y++) {
+		printf("%02hhd ", Y);
+	}
+	printf("\n");
+
+	for (int Y = 0; Y < 16; Y++) {
+		printf("%02hhx ", ((char *)vec)[Y]);
+	}
+	printf("\n");
 	printf("\n");
 }
 
@@ -948,10 +970,8 @@ static const char iotaArr64[64] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,1
 static const __m256i iota64 = *(__m256i*)&iotaArr64;
 static const int iotaArr8[8] = {0,1,2,3,4,5,6,7};
 static const __m256i iota8 = *(__m256i*)&iotaArr8;
-// 基於SSE的字節數據的乘法。
-// <param name="Kernel">需要卷積的核矩陣。 </param>
-// <param name="Conv">卷積矩陣。 </param>
-// <param name="Length">矩陣所有元素的長度。 </param>
+
+//
 inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharConv, int iLength)
 {
 	const int iBlockSize = 32, Block = iLength / iBlockSize;
@@ -964,20 +984,12 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 	{
 		char diff = min(iLength - Y, 127);
 		__m256i clownMask = _mm256_set1_epi8(diff);
-		// printf("1 %hhx\n", diff);
-		// printBytes(&clownMask);
 		clownMask = _mm256_sub_epi8(clownMask, iota64);
-		// printf("2\n");
-		// printBytes(&clownMask);
 
 		clownMask = _mm256_cmpgt_epi8( clownMask, Zero);
-		// printf("3\n");
-		// printBytes(&clownMask);
 
 		__m256i SrcK = _mm256_loadu_si256((__m256i*)(pCharKernel + Y));
 		__m256i SrcC = _mm256_loadu_si256 ((__m256i*)(pCharConv + Y));
-		// printBytes(&SrcK);
-		// printBytes(&SrcC);
 
 		SrcK = _mm256_and_si256 (SrcK, clownMask);
 		SrcC = _mm256_and_si256 (SrcC, clownMask);
@@ -994,6 +1006,7 @@ inline int IM_Conv_SIMD_AVX (unsigned char* pCharKernel, unsigned char *pCharCon
 	return Sum;
 }
 
+// Utility
 template<typename  T>
 void printMat(cv::Mat mat) {
 	for (int Y = 0; Y < mat.rows; Y++) {
@@ -1004,25 +1017,58 @@ void printMat(cv::Mat mat) {
 	}
 }
 
-
-//#define ORG
-
-void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
+// Helpers for masking
+// this creates a mask for the first n bytes
+inline __m128i mask_shift_2(uint32_t n)
 {
-	if (true) {
-		MatchTemplateInverted(matSrc, pTemplData, matResult, iLayer, bUseSIMD);
-		return;
-	}
+	static const int8_t mask_lut[32] = {
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	  };
+	return _mm_loadu_si128((__m128i *)(mask_lut + 16 - n));
+}
 
+
+inline __m256i mask_shift_256(uint32_t n)
+{
+	static const int8_t mask_lut[64] = {
+		-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	  };
+	return _mm256_loadu_si256((__m256i *)(mask_lut + 32 - n));
+}
+
+const auto vec_zero = _mm256_setzero_si256();
+const auto vec_one = _mm256_set1_epi32(1);
+
+
+void CMatchToolDlg::MatchTemplateBase (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
+{
 	if (m_ckSIMD && bUseSIMD)
 	{
+		// printf("SIMD\n");
 		//From ImageShop
-		matResult.create (matSrc.rows - pTemplData->vecPyramid[iLayer].rows + 1,
-			matSrc.cols - pTemplData->vecPyramid[iLayer].cols + 1, CV_32FC1);
-		matResult.setTo (0);
 		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
-		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
+		matResult.create (matSrc.rows - matTemplate.rows + 1,matSrc.cols - matTemplate.cols + 1, CV_32FC1);
+		matResult.setTo (0);
 
+// uncomment the line to test different parallelization tactics
+//#define MATCH_TEMPLATE_BASE
+//#define MATCH_TEMPLATE_SEQUENTIAL_SOURCE_TEMPLATE
+//#define MATCH_TEMPLATE_SEQUENTIAL_TEMPLATE_SOURCE
+//#define MATCH_TEMPLATE_SEQUENTIAL_RESULT_TEMPLATE
+//#define MATCH_TEMPLATE_LOAD_TO_RESULT_BATCH_4
+//#define MATH_TEMLATED_LOAD_TO_RESULT_BATCH_16
+//#define MATCH_TEMPLATE_LOAD_TO_RESULT_BATCH_24
+//#define MATCH_TEMPLATE_SIMD
+//#define MATCH_TEMPLATE_OPENCV
+
+
+#if defined(MATCH_TEMPLATE_BASE)
+		// this is the original loop convolution that was used by the author
+		// code is left unchanged it already has some SIMD parallelisation
+		// using SSE 128-bit registers
+        // In this version we already loop over the
 		int  t_r_end = matTemplate.rows, t_r = 0;
 		for (int r = 0; r < matResult.rows; r++)
 		{
@@ -1033,137 +1079,476 @@ void CMatchToolDlg::MatchTemplate (cv::Mat& matSrc, s_TemplData* pTemplData, cv:
 			{
 				r_template = matTemplate.ptr<uchar> ();
 				r_sub_source = r_source;
-				for (t_r = 0; t_r < t_r_end; ++t_r)
+				for (t_r = 0; t_r < t_r_end; ++t_r, r_sub_source += matSrc.cols, r_template += matTemplate.cols)
 				{
-					r_sub_source += matSrc.cols;
-					r_template += matTemplate.cols;
-					*r_matResult += IM_Conv(r_template, r_sub_source, matTemplate.cols);
+					*r_matResult = *r_matResult + IM_Conv_SIMD (r_template, r_sub_source, matTemplate.cols);
 				}
 			}
 		}
 
-		//From ImageShop
-	}
-	else
-		matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
-	
-	/*Mat diff;
-	absdiff(matResult, matResult, diff);
-	double dMaxValue;
-	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
-	CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
-	// CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
-}
 
+#elif defined(MATCH_TEMPLATE_SEQUENTIAL_SOURCE_TEMPLATE)
+		// An experimental version where we try to first loop over the "source" matrix and then we over the template.
+		// It was tricky to the proper indexing
+        // Also really slow
 
-void CMatchToolDlg::MatchTemplateInverted (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer, BOOL bUseSIMD)
-{
-	if (m_ckSIMD && bUseSIMD)
-	{
-		// printf("SIMD\n");
-		//From ImageShop
-		cv::Mat& matTemplate = pTemplData->vecPyramid[iLayer];
-		matResult.create (matSrc.rows - matTemplate.rows + 1,matSrc.cols - matTemplate.cols + 1, CV_32FC1);
-		matResult.setTo (0);
-
-		// static const int iotaArr[8] = {0,1,2,3,4,5,6,7};
-
-
-		// printf("SRC: %d %d %p TEMPLATE: %d %d %p \n", matSrc.rows, matSrc.cols, matSrc.data, matTemplate.rows, matTemplate.cols, matTemplate.data);
-		if (false)
-			for (int rr = 0; rr < matResult.rows; rr++) {
-				auto* r_res = matResult.ptr<float> (rr);
-				for (int rc = 0; rc < matResult.cols; rc++) {
-					for (int tr = 0; tr < matTemplate.rows; tr++) {
-
-						auto* r_src = matSrc.ptr<uchar>(rr + tr);
-						auto* r_templ = matTemplate.ptr<uchar>(tr);
-
-						int blockSize = 32;
-						for (int tc = 0; tc < matTemplate.cols; tc+=blockSize) {
-							__m256i templ = _mm256_cvtepu8_epi16(_mm_loadu_epi8(r_templ + tc));
-							__m256i src = _mm256_cvtepu8_epi16(_mm_loadu_epi8(r_src + rc + tc ));
-							__m256i mult = _mm256_mullo_epi16(templ, src);
-
-							// __m256i vec =
-
-
-							r_res[rc] += r_templ[tc] * r_src[rc + tc];
-						}
+		for (int sr = 0; sr < matSrc.rows; sr++) {
+			uchar* r_src = matSrc.ptr<uchar> (sr);
+			for (int sc = 0; sc < matSrc.cols; sc++) {
+				for (int tr = max(0, sr - matResult.rows); tr < sr + 1 && tr < matTemplate.rows; tr++) {
+					uchar* r_templ = matTemplate.ptr<uchar> (tr);
+					int rr = sr - tr;
+					float* r_res = matResult.ptr<float> (rr);
+					for (int tc = max(0, sc - matResult.cols); tc < min(sc + 1, matTemplate.cols); tc++) {
+						int rc = sc - tc;
+						r_res[rc] += r_templ[tc] * r_src[sc];
 					}
-
 				}
 			}
+		}
+#elif defined(MATCH_TEMPLATE_SEQUENTIAL_TEMPLATE_SOURCE)
+		//  This version is the same as the previous one but we first iterate over the template matrix and
+        // then over the source. This is about 18% faster
+		for (int tr = 0; tr < matTemplate.rows; tr++) {
+			uchar* r_templ = matTemplate.ptr<uchar> (tr);
+			for (int sr = max(0, tr); sr < matResult.rows + tr && sr < matSrc.rows; sr++) {
+				uchar* r_src = matSrc.ptr<uchar> (sr);
+				int rr = sr - tr;
+				float* r_res = matResult.ptr<float> (rr);
+				for (int tc = 0; tc < matTemplate.cols; tc++) {
+					int batchSize = 1;
+					for (int sc = max(0,  tc); sc < matResult.cols + tc && sc < matSrc.cols; sc+=batchSize) {
+						int rc = sc - tc;
+						r_res[rc] += r_templ[tc] * r_src[sc];
+					}
+				}
+			}
+		}
+#elif defined(MATCH_TEMPLATE_SEQUENTIAL_RESULT_TEMPLATE)
+        // In this version we first iterate over the result matrix and then over the template matrix
+        // the whole point of trying these iteration orders is to see if it affects performance (because of cpu caching)
+        // Also different iteration orders will allow us to do different types of parallelizations
+		for (int rr = 0; rr < matResult.rows; rr++) {
+			auto* r_res = matResult.ptr<float> (rr);
+			for (int rc = 0; rc < matResult.cols; rc++) {
+				for (int tr = 0; tr < matTemplate.rows; tr++) {
+					auto* r_src = matSrc.ptr<uchar>(rr + tr);
+					auto* r_templ = matTemplate.ptr<uchar>(tr);
 
+					for (int tc = 0; tc < matTemplate.cols; tc++) {
+						r_res[rc] += r_templ[tc] * r_src[rc + tc];
+					}
+				}
 
-		if (true)
+			}
+		}
+#elif defined(MATCH_TEMPLATE_LOAD_TO_RESULT_BATCH_4)
+        // This is the parallel version of a loop where we first iterate over the template matrix and then iterate over
+		// the result matrix this allows us to write to 8 float to the result matrix at a time:
+        // Here is a picture of the access pattern:
+
+//            [tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1][tmp 0][tmp 1]
+//               *      *      *      *      *      *      *      *      *      *      *      *      *      *      *      *
+//            [src 0][src 1][src 1][src 2][src 2][src 3][src 3][src 4][src 4][src 5][src 5][src 6][src 6][src 7][src 7][src 8]
+//                |     |       |     |       |     |       |     |       |     |       |     |       |     |       |     |
+//                |--+--|       |--+--|       |--+--|       |--+--|       |--+--|       |--+--|       |--+--|       |--+--|
+//                   |             |             |             |             |             |             |             |
+//            [     r0     ][     r1     ][     r2     ][     r3     ][     r4     ][     r5     ][     r6     ][     r7     ]
+
+        // Notice the interleaving pattern for the source values. We need to interleave them due to the way convolution works
+        // Actually we repeat that one more time with the source columns shifted over 2 and interleaved one more time
+        // Doing it twice will save us some loads and conversions to floats which are pretty expensive
+
+		for(int tr = 0; tr < matTemplate.rows; tr++) {
+			uchar* r_templ = matTemplate.ptr<uchar> (tr);
+			for (int rr = 0; rr < matResult.cols; rr++) {
+				float* r_res = matResult.ptr<float> (rr);
+				uchar* r_src = matSrc.ptr<uchar> (tr + rr);
+
+				int bigBlockSize = 4;
+				for (int tc = 0; tc < matTemplate.cols; tc+=bigBlockSize) {
+					int blockSize = 8;
+
+                    // Load in the template matrix
+					auto tmp = _mm_cvtepu8_epi16(_mm_loadu_epi8(r_templ + tc));
+					// Mask it so we do not write over the batch size
+                    int shift = max(0, tc + 4 - matTemplate.cols);
+					tmp = _mm_slli_epi64(tmp, shift*16);
+					tmp = _mm_srli_epi64(tmp, shift*16);
+
+					// Repeat the first 2 numbers over the whole register
+					auto vec_t1 = _mm256_broadcastd_epi32(tmp);
+                    // Get another register where we repeat numbers 3 - 4
+					auto vec_t2 = _mm256_broadcastd_epi32(
+						_mm_srli_si128(tmp, 4)
+					);
+
+					for (int rc = 0; rc < matResult.cols; rc+=blockSize) {
+						// we load in 16
+						// But we only use 11
+						// These are the first interealed sections of source values
+						auto shifted_0 =  _mm_loadu_si128((__m128i*)(r_src + tc + rc));
+						auto shifted_1 = _mm_srli_si128(shifted_0, 1);
+						auto interleaved_1 = _mm_unpacklo_epi16(
+							(shifted_0),
+							shifted_1
+						);
+
+						auto shifted_2 = _mm_srli_si128(shifted_0, 2);
+						auto shifted_3 = _mm_srli_si128(shifted_0, 3);
+						auto interleaved_2 = _mm_unpacklo_epi16(
+							(shifted_2),
+							shifted_3
+						);
+
+						auto extended_1 = _mm256_cvtepu8_epi16(interleaved_1);
+						auto extended_2 = _mm256_cvtepu8_epi16(interleaved_2);
+						__m256i vec_mul1 = _mm256_madd_epi16(vec_t1, extended_1);
+						__m256i vec_mul2 = _mm256_madd_epi16(vec_t2, extended_2);
+						__m256 vec_mul = _mm256_cvtepi32_ps(_mm256_add_epi32(vec_mul1, vec_mul2));
+
+						auto vec_r = _mm256_loadu_ps(r_res + rc);
+						vec_r = _mm256_add_ps(vec_r, vec_mul);
+						__m256i mask = _mm256_set1_epi32 (matResult.cols - rc );
+						mask = _mm256_sub_epi32 (mask, iota8);
+						mask = _mm256_cmpgt_epi32(mask, vec_zero);
+						_mm256_maskstore_ps(r_res+rc, mask, vec_r);
+					}
+				}
+			}
+		}
+// Below you can find the same versions as above but scaled to 8, 16 and 24 batchsize for the values loaded from the template
+// Code is pretty simillar execpt we had to do some extra work around the fact that the 256 registers actually have lanes
+#elif defined(MATCH_TEMPLATE_LOAD_TO_RESULT_BATCH_8)
+		for(int tr = 0; tr < matTemplate.rows; tr++) {
+			uchar* r_templ = matTemplate.ptr<uchar> (tr);
+			for (int rr = 0; rr < matResult.cols; rr++) {
+				float* r_res = matResult.ptr<float> (rr);
+				uchar* r_src = matSrc.ptr<uchar> (tr + rr);
+
+				int bigBlockSize = 8;
+				int blocks = matTemplate.cols / bigBlockSize;
+				for (int tc = 0; tc < matTemplate.cols; tc+=bigBlockSize) {
+
+					auto tmp = _mm_cvtepu8_epi16(_mm_loadu_epi8(r_templ + tc));
+					auto to_read = min(matTemplate.cols - tc, bigBlockSize);
+					auto mask = mask_shift_2( to_read * 2);
+					// printBytes128(&mask);
+					tmp = _mm_and_si128(mask, tmp);
+
+					auto vec_t1 = _mm256_broadcastd_epi32(tmp);
+					auto vec_t2 = _mm256_broadcastd_epi32(_mm_srli_si128(tmp, 4));
+					auto vec_t3 = _mm256_broadcastd_epi32(_mm_srli_si128(tmp, 8));
+					auto vec_t4 = _mm256_broadcastd_epi32(_mm_srli_si128(tmp, 12));
+
+					int blockSize = 8;
+					for (int rc = 0; rc < matResult.cols; rc+=blockSize) {
+						// we load in 16
+						// But we only use 15
+						auto shifted_0 =  _mm_loadu_si128((__m128i*)(r_src + tc + rc));
+						auto shifted_1 = _mm_srli_si128(shifted_0, 1);
+						auto shifted_2 = _mm_srli_si128(shifted_0, 2);
+						auto shifted_3 = _mm_srli_si128(shifted_0, 3);
+						auto shifted_4 = _mm_srli_si128(shifted_0, 4);
+						auto shifted_5 = _mm_srli_si128(shifted_0, 5);
+						auto shifted_6 = _mm_srli_si128(shifted_0, 6);
+						auto shifted_7 = _mm_srli_si128(shifted_0, 7);
+
+						// this is 128 bits long and it spans over 8 bits
+						// 00 01 01 02 02 03 03 04 04 05 05 06 06 07 07 08
+						// 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02
+						// 00 00 00 01 00 01 00 02 00 02 00 03 00 03 00 04 00 04 00 05 00 05 00 06 00 06 00 07 00 07 00 08
+						auto interleaved_1 = _mm_unpacklo_epi16(shifted_0,shifted_1);
+						auto interleaved_2 = _mm_unpacklo_epi16(shifted_2,shifted_3);
+						auto interleaved_3 = _mm_unpacklo_epi16(shifted_4,shifted_5);
+						auto interleaved_4 = _mm_unpacklo_epi16(shifted_6,shifted_7);
+
+						auto extended_1 = _mm256_cvtepu8_epi16(interleaved_1);
+						auto extended_2 = _mm256_cvtepu8_epi16(interleaved_2);
+						auto extended_3 = _mm256_cvtepu8_epi16(interleaved_3);
+						auto extended_4 = _mm256_cvtepu8_epi16(interleaved_4);
+
+						__m256i vec_mul1 = _mm256_madd_epi16(vec_t1, extended_1);
+						__m256i vec_mul2 = _mm256_madd_epi16(vec_t2, extended_2);
+						__m256i vec_mul3 = _mm256_madd_epi16(vec_t3, extended_3);
+						__m256i vec_mul4 = _mm256_madd_epi16(vec_t4, extended_4);
+
+						__m256i sum1 = _mm256_add_epi32(vec_mul1, vec_mul2);
+						__m256i sum2 = _mm256_add_epi32(vec_mul3, vec_mul4);
+
+						__m256i sum = _mm256_add_epi32(sum1, sum2);
+						__m256 vec_mul = _mm256_cvtepi32_ps(sum);
+
+						auto vec_r = _mm256_loadu_ps(r_res + rc);
+						vec_r = _mm256_add_ps(vec_r, vec_mul);
+						__m256i mask = _mm256_set1_epi32 (matResult.cols - rc );
+						mask = _mm256_sub_epi32 (mask, iota8);
+						mask = _mm256_cmpgt_epi32(mask, vec_zero);
+						_mm256_maskstore_ps(r_res+rc, mask, vec_r);
+					}
+				}
+			}
+		}
+#elif defined(MATH_TEMLATED_LOAD_TO_RESULT_BATCH_16)
 			for(int tr = 0; tr < matTemplate.rows; tr++) {
 				uchar* r_templ = matTemplate.ptr<uchar> (tr);
 				for (int rr = 0; rr < matResult.cols; rr++) {
 					float* r_res = matResult.ptr<float> (rr);
 					uchar* r_src = matSrc.ptr<uchar> (tr + rr);
-					for (int tc = 0; tc < matTemplate.cols; tc++) {
+
+					const int bigBlockSize = 16;
+					int blocks = matTemplate.cols / bigBlockSize;
+					for (int tc = 0; tc < matTemplate.cols; tc+=bigBlockSize) {
+
+						auto tmp = _mm256_cvtepu8_epi16(_mm_loadu_epi8(r_templ + tc));
+						auto to_read = min(matTemplate.cols - tc, bigBlockSize);
+						auto mask = mask_shift_256( to_read * 2);
+						tmp = _mm256_and_si256(mask, tmp);
+
+						__m256i vec_t[8];
+						auto vec_i = vec_zero;
+						for (int i = 0; i < 8; i++) {
+							// This is kind of expnsive, but it still cheaper than broadcasting
+							vec_t[i] = _mm256_permutevar8x32_epi32(tmp, vec_i);
+
+							vec_i = _mm256_add_epi32(vec_i, vec_one);
+						}
+
 						int blockSize = 8;
-						int blocks = matResult.cols / blockSize;
-
-						__m256i vec_templ = _mm256_set1_epi32(r_templ[tc]);
 						for (int rc = 0; rc < matResult.cols; rc+=blockSize) {
-							__m256i vec_src = _mm256_cvtepu8_epi32(_mm_loadu_si64(r_src + tc + rc ));
-							__m256 vec_mul = _mm256_cvtepi32_ps(_mm256_mul_epi32(vec_src, vec_templ));
-							__m256 vec_res = _mm256_loadu_ps(r_res + rc);
-							__m256 vec_sum = _mm256_add_ps(vec_mul, vec_res);
+							// we load in 32
+							// But we only use 8 + 15 = 23
+							auto vec_src1 =  _mm_loadu_si128((__m128i*)(r_src + tc + rc));
+							auto vec_src2 =  _mm_loadu_si128((__m128i*)(r_src + tc + rc + 8));
 
-							__m256i mask = _mm256_set1_epi32 (rc);
-							mask = _mm256_add_epi32 (mask, iota8);
-							mask = _mm256_cmpgt_epi32 (_mm256_set1_epi32(matResult.cols), mask);
+							auto shifted_0 = vec_src1;
+							auto shifted_1 = _mm_srli_si128(shifted_0, 1);
+							auto shifted_2 = _mm_srli_si128(shifted_0, 2);
+							auto shifted_3 = _mm_srli_si128(shifted_0, 3);
+							auto shifted_4 = _mm_srli_si128(shifted_0, 4);
+							auto shifted_5 = _mm_srli_si128(shifted_0, 5);
+							auto shifted_6 = _mm_srli_si128(shifted_0, 6);
+							auto shifted_7 = _mm_srli_si128(shifted_0, 7);
 
-							_mm256_maskstore_ps(r_res + rc, mask, vec_sum);
-							_mm256_storeu_ps(r_res + rc, vec_sum);
-							// r_res[rc] += r_templ[tc] * r_src[rc + tc];
-							// r_res[rc+1] += r_templ[tc] * r_src[rc + tc+1];
-							// r_res[rc+2] += r_templ[tc] * r_src[rc + tc+2];
-							// r_res[rc+3] += r_templ[tc] * r_src[rc + tc+3];
-							// r_res[rc+4] += r_templ[tc] * r_src[rc + tc+4];
-							// r_res[rc+5] += r_templ[tc] * r_src[rc + tc+5];
-							// r_res[rc+6] += r_templ[tc] * r_src[rc + tc+6];
-							// r_res[rc+7] += r_templ[tc] * r_src[rc + tc+7];
+							auto shifted_8= vec_src2;
+							auto shifted_9 = _mm_srli_si128(shifted_8, 1);
+							auto shifted_10 = _mm_srli_si128(shifted_8, 2);
+							auto shifted_11 = _mm_srli_si128(shifted_8, 3);
+							auto shifted_12 = _mm_srli_si128(shifted_8, 4);
+							auto shifted_13 = _mm_srli_si128(shifted_8, 5);
+							auto shifted_14 = _mm_srli_si128(shifted_8, 6);
+							auto shifted_15 = _mm_srli_si128(shifted_8, 7);
+
+							// this is 128 bits long and it spans over 8 bits
+							// 00 01 01 02 02 03 03 04 04 05 05 06 06 07 07 08
+							// 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02
+							// 00 00 00 01 00 01 00 02 00 02 00 03 00 03 00 04 00 04 00 05 00 05 00 06 00 06 00 07 00 07 00 08
+							auto interleaved_1 = _mm_unpacklo_epi16(shifted_0,shifted_1);
+							auto interleaved_2 = _mm_unpacklo_epi16(shifted_2,shifted_3);
+							auto interleaved_3 = _mm_unpacklo_epi16(shifted_4,shifted_5);
+							auto interleaved_4 = _mm_unpacklo_epi16(shifted_6,shifted_7);
+							auto interleaved_5 = _mm_unpacklo_epi16(shifted_8,shifted_9);
+							auto interleaved_6 = _mm_unpacklo_epi16(shifted_10,shifted_11);
+							auto interleaved_7 = _mm_unpacklo_epi16(shifted_12,shifted_13);
+							auto interleaved_8 = _mm_unpacklo_epi16(shifted_14,shifted_15);
+
+							auto extended_1 = _mm256_cvtepu8_epi16(interleaved_1);
+							auto extended_2 = _mm256_cvtepu8_epi16(interleaved_2);
+							auto extended_3 = _mm256_cvtepu8_epi16(interleaved_3);
+							auto extended_4 = _mm256_cvtepu8_epi16(interleaved_4);
+							auto extended_5 = _mm256_cvtepu8_epi16(interleaved_5);
+							auto extended_6 = _mm256_cvtepu8_epi16(interleaved_6);
+							auto extended_7 = _mm256_cvtepu8_epi16(interleaved_7);
+							auto extended_8 = _mm256_cvtepu8_epi16(interleaved_8);
+
+							__m256i vec_mul1 = _mm256_madd_epi16(vec_t[0], extended_1);
+							__m256i vec_mul2 = _mm256_madd_epi16(vec_t[1], extended_2);
+							__m256i vec_mul3 = _mm256_madd_epi16(vec_t[2], extended_3);
+							__m256i vec_mul4 = _mm256_madd_epi16(vec_t[3], extended_4);
+							__m256i vec_mul5 = _mm256_madd_epi16(vec_t[4], extended_5);
+							__m256i vec_mul6 = _mm256_madd_epi16(vec_t[5], extended_6);
+							__m256i vec_mul7 = _mm256_madd_epi16(vec_t[6], extended_7);
+							__m256i vec_mul8 = _mm256_madd_epi16(vec_t[7], extended_8);
+
+							__m256i sum1 = _mm256_add_epi32(vec_mul1, vec_mul2);
+							__m256i sum2 = _mm256_add_epi32(vec_mul3, vec_mul4);
+							__m256i sum3 = _mm256_add_epi32(vec_mul5, vec_mul6);
+							__m256i sum4 = _mm256_add_epi32(vec_mul7, vec_mul8);
+
+							__m256i sum5 = _mm256_add_epi32(sum1, sum2);
+							__m256i sum6 = _mm256_add_epi32(sum3, sum4);
+							__m256i sum = _mm256_add_epi32(sum5, sum6);
+							__m256 vec_mul = _mm256_cvtepi32_ps(sum);
+
+							auto vec_r = _mm256_loadu_ps(r_res + rc);
+							vec_r = _mm256_add_ps(vec_r, vec_mul);
+							__m256i mask = _mm256_set1_epi32 (matResult.cols - rc );
+							mask = _mm256_sub_epi32 (mask, iota8);
+							mask = _mm256_cmpgt_epi32(mask, vec_zero);
+							_mm256_maskstore_ps(r_res+rc, mask, vec_r);
 						}
 					}
 				}
 			}
+#elif defined(MATCH_TEMPLATE_LOAD_TO_RESULT_BATCH_24)
+			for(int tr = 0; tr < matTemplate.rows; tr++) {
+				uchar* r_templ = matTemplate.ptr<uchar> (tr);
+				for (int rr = 0; rr < matResult.cols; rr++) {
+					float* r_res = matResult.ptr<float> (rr);
+					uchar* r_src = matSrc.ptr<uchar> (tr + rr);
 
-		if (false)
-			for (int sr = 0; sr < matSrc.rows; sr++) {
-				uchar* r_src = matSrc.ptr<uchar> (sr);
-				for (int sc = 0; sc < matSrc.cols; sc++) {
-					for (int tr = max(0, sr - matResult.rows); tr < sr + 1 && tr < matTemplate.rows; tr++) {
-						uchar* r_templ = matTemplate.ptr<uchar> (tr);
-						int rr = sr - tr;
-						float* r_res = matResult.ptr<float> (rr);
-						for (int tc = max(0, sc - matResult.cols); tc < min(sc + 1, matTemplate.cols); tc++) {
-							int rc = sc - tc;
-							r_res[rc] += r_templ[tc] * r_src[sc];
+					const int bigBlockSize = 24;
+					int blocks = matTemplate.cols / bigBlockSize;
+					for (int tc = 0; tc < matTemplate.cols; tc+=bigBlockSize) {
+						auto to_read = min(matTemplate.cols - tc, bigBlockSize);
+						auto mask = mask_shift_256( to_read  );
+						auto tmp = _mm256_loadu_epi8(r_templ + tc);
+						tmp = _mm256_and_si256(tmp, mask);
+
+						auto tmp_lo = _mm256_unpacklo_epi8(tmp, vec_zero);
+						auto tmp_hi = _mm256_unpackhi_epi8(tmp, vec_zero);
+
+						__m256i vec_t2[16];
+						auto vec_i = vec_zero;
+						for (int i = 0; i <4; i++) {
+							vec_t2[i] = _mm256_permutevar8x32_epi32(tmp_lo, vec_i);
+							vec_i = _mm256_add_epi32(vec_i, vec_one);
+						}
+						for (int i = 8; i <12; i++) {
+							vec_t2[i] = _mm256_permutevar8x32_epi32(tmp_lo, vec_i);
+							vec_i = _mm256_add_epi32(vec_i, vec_one);
+						}
+
+						vec_i = vec_zero;
+						for (int i = 4; i <8; i++) {
+							vec_t2[i] = _mm256_permutevar8x32_epi32(tmp_hi, vec_i);
+							vec_i = _mm256_add_epi32(vec_i, vec_one);
+						}
+						// for (int i = 12; i <16; i++) {
+							// vec_t2[i] = _mm256_permutevar8x32_epi32(tmp_hi, vec_i);
+							// vec_i = _mm256_add_epi32(vec_i, vec_one);
+						// }
+
+
+						int blockSize = 8;
+						for (int rc = 0; rc < matResult.cols; rc+=blockSize) {
+							// we load in 32
+							// But we only use 8 + 23 = 31
+							__m128i vec_src[3];
+							vec_src[0] =  _mm_loadu_si128((__m128i*)(r_src + tc + rc));
+							vec_src[1] =  _mm_loadu_si128((__m128i*)(r_src + tc + rc + 8));
+							vec_src[2] =  _mm_loadu_si128((__m128i*)(r_src + tc + rc + 16));
+							// vec_src[3] =  _mm_loadu_si128((__m128i*)(r_src + tc + rc + 24));
+
+							int srcBlockSize = 24;
+
+							__m128i shifted[srcBlockSize];
+							for (int i = 0; i <srcBlockSize/8; i++) {
+								shifted[i*8+0] = vec_src[i];
+								shifted[i*8+1] = _mm_srli_si128(shifted[i*8], 1);
+								shifted[i*8+2] = _mm_srli_si128(shifted[i*8], 2);
+								shifted[i*8+3] = _mm_srli_si128(shifted[i*8], 3);
+								shifted[i*8+4] = _mm_srli_si128(shifted[i*8], 4);
+								shifted[i*8+5] = _mm_srli_si128(shifted[i*8], 5);
+								shifted[i*8+6] = _mm_srli_si128(shifted[i*8], 6);
+								shifted[i*8+7] = _mm_srli_si128(shifted[i*8], 7);
+							}
+
+							// this is 128 bits long and it spans over 8 bits
+							// 00 01 01 02 02 03 03 04 04 05 05 06 06 07 07 08
+							// 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02 00 01 00 02
+							// 00 00 00 01 00 01 00 02 00 02 00 03 00 03 00 04 00 04 00 05 00 05 00 06 00 06 00 07 00 07 00 08
+							__m256i vec_mul[srcBlockSize / 2];
+							for (int i = 0; i < srcBlockSize / 2; i++) {
+								vec_mul[i] = _mm256_madd_epi16(vec_t2[i],  _mm256_cvtepu8_epi16(_mm_unpacklo_epi16(shifted[i*2], shifted[i*2+1])));
+							}
+
+							__m256i sum1 = _mm256_add_epi32(vec_mul[0] , vec_mul[1]);
+							__m256i sum2 = _mm256_add_epi32(vec_mul[2], vec_mul[3]);
+							__m256i sum3 = _mm256_add_epi32(vec_mul[4], vec_mul[5]);
+							__m256i sum4 = _mm256_add_epi32(vec_mul[6], vec_mul[7]);
+							__m256i sum5 = _mm256_add_epi32(vec_mul[8] , vec_mul[9]);
+							__m256i sum6 = _mm256_add_epi32(vec_mul[10], vec_mul[11]);
+
+							__m256i sum9 = _mm256_add_epi32(sum1, sum2);
+							__m256i sum10 = _mm256_add_epi32(sum3, sum4);
+							__m256i sum11 = _mm256_add_epi32(sum5, sum6);
+
+							__m256i sum13 = _mm256_add_epi32(sum9, sum10);
+
+
+							__m256i sum = _mm256_add_epi32(sum13, sum11);
+							__m256 vec_sum_f = _mm256_cvtepi32_ps(sum);
+
+							auto vec_r = _mm256_loadu_ps(r_res + rc);
+							vec_r = _mm256_add_ps(vec_r, vec_sum_f);
+							__m256i mask = _mm256_set1_epi32 (matResult.cols - rc );
+							mask = _mm256_sub_epi32 (mask, iota8);
+							mask = _mm256_cmpgt_epi32(mask, vec_zero);
+							_mm256_maskstore_ps(r_res+rc, mask, vec_r);
 						}
 					}
 				}
 			}
+#elif defined(MATCH_TEMPLATE_SIMD)
+		// Just like in the loops above we iterate over the template and then over the result, in this loop we have the same pattern
+        // but this time the parallelization is as follows:
 
-		// printf("\n");
-		// printMat<float>(matResult);
+//		        [src 0][src 1][src 2][src 3][src 4][src 5][src 6][src 7][src 8][src 9][src10][src11][src12][src13][src14][src15]
+//			       *      *      *      *      *      *      *      *      *      *      *      *      *      *      *      *
+//	        	[tmp 0][tmp 1][tmp 2][tmp 3][tmp 4][tmp 5][tmp 6][tmp 7][tmp 8][tmp 9][tmp10][tmp11][tmp12][tmp13][tmp14][tmp15]
+//                   |      |      |      |      |      |      |      |      |      |      |      |      |      |      |      |
+//		result =   +      +      +      +      +      +      +      +      +      +      +      +      +      +      +      +
+
+//     So we do a vertical multiplication and a horizontal addition. We also do some expanding into int16 from bytes since AVX does
+//     not support multiplication of uchars :(
+		for(int tr = 0; tr < matTemplate.rows; tr++) {
+			uchar* r_templ = matTemplate.ptr<uchar> (tr);
+			for (int rr = 0; rr < matResult.cols; rr++) {
+				float* r_res = matResult.ptr<float> (rr);
+				uchar* r_src = matSrc.ptr<uchar> (tr + rr);
+
+				int templ_block_size = 32;
+				const auto vec_zero = _mm256_setzero_si256();
+				auto vec_sum = _mm256_setzero_si256();
+
+				for (int tc = 0; tc < matTemplate.cols; tc+=templ_block_size) {
+					__m256i mask = _mm256_set1_epi8 (min( matTemplate.cols - tc,127));
+					mask = _mm256_sub_epi8 (mask, iota64);
+					mask = _mm256_cmpgt_epi8 (mask, vec_zero );
+
+					__m256i vec_templ = _mm256_loadu_si256 ((__m256i*)(r_templ + tc));
+					vec_templ = _mm256_and_si256 (vec_templ, mask);
+					__m256i vec_templ_lo = _mm256_unpacklo_epi8 (vec_templ, vec_zero);
+					__m256i vec_templ_hi = _mm256_unpackhi_epi8 (vec_templ, vec_zero);
+					for (int rc = 0; rc < matResult.cols; rc++) {
+
+						__m256i vec_src1 = _mm256_loadu_si256 ((__m256i*)(r_src + tc + rc));
+						__m256i vec_src_lo = _mm256_unpacklo_epi8 (vec_src1, vec_zero);
+						__m256i vec_src_hi = _mm256_unpackhi_epi8 (vec_src1, vec_zero);
+
+						__m256i vec_tmp_sum = _mm256_add_epi32 (_mm256_madd_epi16 (vec_src_lo, vec_templ_lo), _mm256_madd_epi16 (vec_src_hi, vec_templ_hi));
+						r_res[rc] += _mm256_hsum_epi32 (vec_tmp_sum);
+					}
+				}
+			}
+		}
+#elif defined(MATCH_TEMPLATE_OPENCV)
+	matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
+#endif
+
+
 	}
 	else
 		matchTemplate (matSrc, pTemplData->vecPyramid[iLayer], matResult, CV_TM_CCORR);
 
-	/*Mat diff;
-	absdiff(matResult, matResult, diff);
-	double dMaxValue;
-	minMaxLoc(diff, 0, &dMaxValue, 0,0);*/
+#define COEFF_DENOMINATOR_SIMD
+#if defined(COEFF_DENOMINATOR_SIMD)
 	CCOEFF_Denominator_SIMD_AVX (matSrc, pTemplData, matResult, iLayer);
-	// CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
+#else
+    CCOEFF_Denominator (matSrc, pTemplData, matResult, iLayer);
+#endif
 }
-
-
-
 
 void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double dAngle, Mat& matROI)
 {
@@ -1183,10 +1568,9 @@ void CMatchToolDlg::GetRotatedROI (Mat& matSrc, Size size, Point2f ptLT, double 
 	warpAffine (matSrc, matROI, rMat, sizePadding);
 }
 
-
+// Original function
 void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
 {
-	// auto t2 = Timer("t2");
 	if (pTemplData->vecResultEqual1[iLayer])
 	{
 		matResult = Scalar::all (1);
@@ -1215,7 +1599,6 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 	double dInvArea = pTemplData->vecInvArea[iLayer];
 
 	{
-		// auto t1 = Timer("t1");
 		for (int i = 0; i < matResult.rows; i++)
 		{
 			float* rrow = matResult.ptr<float> (i);
@@ -1243,28 +1626,19 @@ void CMatchToolDlg::CCOEFF_Denominator (cv::Mat& matSrc, s_TemplData* pTemplData
 					num = num > 0 ? 1 : -1;
 				else
 					num = 0;
-				// printf("res d: %lf\n", num);
 
 				rrow[j] = (float)num;
-				// printres(rrow[j]);
 			}
 		}
 	}
 }
 
-static float blend(float* a, float* b, unsigned int mask) {
-	return (*reinterpret_cast<unsigned int*>(a) & (~mask)) | (*reinterpret_cast<unsigned int*>(b) & ~mask);
-}
 
-void print128_num(__m128i var)
-{
-	uint32_t *val = (uint32_t*) &var;//can also use uint32_t instead of 16_t
-	printf("Numerical: %i %i %i %i \n",val[0], val[1], val[2], val[3]);
-}
-
+// SIMD Version
 inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
 {
-	// auto t2 = Timer("t2");
+	// This is a parallelized version of the above function.
+    // In some comments I have put in the original code
 
 	if (pTemplData->vecResultEqual1[iLayer])
 	{
@@ -1289,11 +1663,11 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 	int sumstep = sum.data ? (int)(sum.step / sizeof (double)) : 0;
 	int sqstep = sqsum.data ? (int)(sqsum.step / sizeof (double)) : 0;
 
-	//
 	double dTemplMean = pTemplData->vecTemplMean[iLayer][0];
 	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
 	double dInvArea = pTemplData->vecInvArea[iLayer];
 
+	// some constants that we are going to use
 	const __m256d zeros = _mm256_setzero_pd();
 	const __m128i zerosi = (__m128i)_mm_setzero_pd();
 	const __m256d ones = _mm256_set1_pd(1.0f);
@@ -1305,19 +1679,17 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 	static const int iotaArr[4] = {0,1,2,3};
 	const __m128i iota = *(__m128i*)&iotaArr;
 	{
-		// auto t2 = Timer("t1");
 		for (int i = 0; i < matResult.rows; i++)
 		{
 			auto* rrow = matResult.ptr<float> (i);
 			int idx = i * sumstep;
 			int idx2 = i * sqstep;
 
+			// We can load 4 doubles in 256 bit regsiters
 			int blockSize = 4;
-			int blocks = matResult.cols / blockSize;
-			int hasExtra =  (matResult.cols - blockSize * blocks) > 0 ? 1 : 0;
-
 			for (int j=0; j < matResult.cols; j+=blockSize)
 			{
+				// we now load 4 doubles from the p1 array
 				// double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
 				__m256d vec_p0 = _mm256_loadu_pd(&p0[idx +j]);
 				__m256d vec_p1 = _mm256_loadu_pd(&p1[idx +j]);
@@ -1327,17 +1699,13 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				t = _mm256_sub_pd(t, vec_p1);
 				t = _mm256_sub_pd(t, vec_p2);
 
-				// printvec("t", t);
-
 				// double num = rrow[j] - t * dTemplMean;
 				__m128 numFloats = _mm_loadu_ps(&rrow[j]);
 				__m256d vec_num = _mm256_cvtps_pd(numFloats); // Expensive cast to doubles... can we prevent that somehow?
 				vec_num = _mm256_fnmadd_pd(t, vec_dTemplMean, vec_num);
-				// printvec("num", vec_num);
 
 				// double wndMean = t * t * dInvArea;
 				__m256d vec_wndMean = _mm256_mul_pd(_mm256_mul_pd(t, t), vec_dInvArea);
-				// printvec("vec_wndMean", vec_wndMean);
 
 				// double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
 				__m256d vec_q0 = _mm256_loadu_pd(&q0[idx2 +j]);
@@ -1347,33 +1715,31 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				__m256d vec_wndSum2 = _mm256_add_pd(vec_q0, vec_q3);
 				vec_wndSum2 = _mm256_sub_pd(vec_wndSum2, vec_q1);
 				vec_wndSum2 = _mm256_sub_pd(vec_wndSum2, vec_q2);
-				// printvec("vec_wndSum2", vec_wndSum2);
 
 				// double diff = MAX (wndSum2 - wndMean, 0);
 				__m256d vec_diff = _mm256_max_pd(_mm256_sub_pd(vec_wndSum2, vec_wndMean), zeros);
-				// std::min (0.5, 10 * FLT_EPSILON * wndSum2)
-				__m256d vec_diffThresh = _mm256_min_pd(halves, _mm256_mul_pd( vec_wndSum2,epsilon ));
 
-				// printvec("vec_diff", vec_diff);
-				// printvec("vec_diffThresh", vec_diffThresh);
+                // std::min (0.5, 10 * FLT_EPSILON * wndSum2)
+				__m256d vec_diffThresh = _mm256_min_pd(halves, _mm256_mul_pd( vec_wndSum2,epsilon ));
 
 				// double threshold = 0;
 				// if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
 				// 	threshold = 0; // avoid rounding errors
 				// else
 				// 	threshold = std::sqrt (diff)*dTemplNorm;
-
+                // We use masking with andnot to emulate the if case scenario
 				__m256d threshold_val_false = _mm256_mul_pd(_mm256_sqrt_pd(vec_diff), _mm256_set1_pd(dTemplNorm));
 				__m256d vec_threshold_mask = _mm256_cmp_pd(vec_diff, vec_diffThresh, _CMP_LE_OS);
 				__m256d vec_threshold = _mm256_andnot_pd(vec_threshold_mask, threshold_val_false);
-				// printvec("vec_threshold", vec_threshold);
 
 
 				// fabs (num)
 				// ( from https://stackoverflow.com/questions/5508628/how-to-absolute-2-double-or-4-floats-using-sse-instruction-set-up-to-sse4)
 				__m256d sign_mask = _mm256_set1_pd(-0.f);
 				__m256d vec_num_abs = _mm256_andnot_pd(sign_mask, vec_num);
-				// abs (num) < threshold
+
+				// We precompute some masks for the sequence of ifs below
+                // abs (num) < threshold
 				__m256d mask_threshold = _mm256_cmp_pd(vec_num_abs, vec_threshold, _CMP_LT_OS);
 				// fabs (num) < threshold * 1.125
 				__m256d mask_threshold_mult = _mm256_cmp_pd(vec_num_abs, _mm256_mul_pd(vec_threshold, _mm256_set1_pd(1.125)), _CMP_LT_OS);
@@ -1397,8 +1763,6 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 						zeros
 					)
 				));
-
-				// printvec("vec_num", vec_num);
 				__m128 result = _mm256_cvtpd_ps(vec_num);
 
 				// This is to prevent overflows when the block size does not divide
@@ -1408,161 +1772,15 @@ inline void CMatchToolDlg::CCOEFF_Denominator_SIMD_AVX (cv::Mat& matSrc, s_Templ
 				// So we are going to write at adresses j*4, j*4+1 ,j*4+2, j*4+3,
 				// which is not good, since addr j*4+3 is out of bounds
 				// To fix that we need to mask out any loads that happen outside the bounds
-				__m128i clownMask = _mm_set1_epi32(matResult.cols - j); // -1 is important
-				clownMask = _mm_sub_epi32(clownMask, iota);
-				clownMask = _mm_cmplt_epi32(zerosi, clownMask);
-				// print128_num( clownMask);
-				// printf("result: %f %f %f %f\n", rrow[j+0], rrow[j+1], rrow[j+2], rrow[j+3]);
-				// printf("result: %f %f %f %f\n", result[0], result[1], result[2], result[3]);
+				__m128i writeMask = _mm_set1_epi32(matResult.cols - j); // -1 is important
+				writeMask = _mm_sub_epi32(writeMask, iota);
+				writeMask = _mm_cmplt_epi32(zerosi, writeMask);
 
-				_mm_maskstore_ps(&rrow[j], clownMask, result);
-				// _mm_storeu_ps(&rrow[j], result);
-				// printf("After: %f %f %f %f\n", rrow[j], rrow[j + 1], rrow[j + 2], rrow[j + 3]);
+				_mm_maskstore_ps(&rrow[j], writeMask, result);
 			}
 		}
 	}
 }
-inline void CMatchToolDlg::CCOEFF_Denominator_SIMD (cv::Mat& matSrc, s_TemplData* pTemplData, cv::Mat& matResult, int iLayer)
-{
-	if (pTemplData->vecResultEqual1[iLayer])
-	{
-		matResult = Scalar::all (1);
-		return;
-	}
-
-
-	Mat sum, sqsum;
-	integral (matSrc, sum, sqsum, CV_64F);
-
-	double* q0 = (double*)sqsum.data;
-	double* q1 = q0 + pTemplData->vecPyramid[iLayer].cols;
-	double* q2 = (double*)(sqsum.data + pTemplData->vecPyramid[iLayer].rows * sqsum.step);
-	double* q3 = q2 + pTemplData->vecPyramid[iLayer].cols;
-
-	double* p0 = (double*)sum.data;
-	double* p1 = p0 + pTemplData->vecPyramid[iLayer].cols;
-	double* p2 = (double*)(sum.data + pTemplData->vecPyramid[iLayer].rows*sum.step);
-	double* p3 = p2 + pTemplData->vecPyramid[iLayer].cols;
-
-	int sumstep = sum.data ? (int)(sum.step / sizeof (double)) : 0;
-	int sqstep = sqsum.data ? (int)(sqsum.step / sizeof (double)) : 0;
-
-	//
-	double dTemplMean = pTemplData->vecTemplMean[iLayer][0];
-	double dTemplNorm = pTemplData->vecTemplNorm[iLayer];
-	double dInvArea = pTemplData->vecInvArea[iLayer];
-
-
-	for (int i = 0; i < matResult.rows; i++)
-	{
-		float* rrow = matResult.ptr<float> (i);
-		int idx = i * sumstep;
-		int idx2 = i * sqstep;
-
-		int blockSize = 2;
-		int blocks = matResult.cols / blockSize;
-		int remainder = blocks*blockSize == matResult.cols ? 0 : 1;
-		unsigned int add_mask  = blocks*blockSize == matResult.cols ? 0x0 : 0xFFFFFFFF;
-		for (int j=0; j < blocks + remainder; j++)
-		{
-
-			// double t = p0[idx + j] - p1[idx + j] - p2[idx + j] + p3[idx + j];
-			__m128d vec_p0 = _mm_loadu_pd(&p0[idx +j*blockSize]);
-			__m128d vec_p1 = _mm_loadu_pd(&p1[idx +j*blockSize]);
-			__m128d vec_p2 = _mm_loadu_pd(&p2[idx +j*blockSize]);
-			__m128d vec_p3 = _mm_loadu_pd(&p3[idx +j*blockSize]);
-			__m128d t = _mm_add_pd(vec_p0, vec_p3);
-
-			t = _mm_sub_pd(t, vec_p1);
-			t = _mm_sub_pd(t, vec_p2);
-
-			// printf("t: %lf\n", t[0]);
-
-			// double num = rrow[j] - t * dTemplMean;
-			const __m128d zeros = _mm_setzero_pd();
-
-			__m128d vec_num = _mm_cvtps_pd(_mm_loadl_pi( reinterpret_cast<__m128>(zeros), reinterpret_cast<__m64 *>(rrow + j * blockSize)));
-			__m128d tmp = _mm_mul_pd(t, _mm_set1_pd(dTemplMean));
-			// printf("tmp: %lf %f %f\n", tmp[0], rrow[j*blockSize], vec_num[0]);
-			vec_num = _mm_sub_pd(vec_num, tmp);
-			// printf("num: %lf\n", vec_num[0]);
-
-			// double wndMean = t * t * dInvArea;
-			__m128d vec_wndMean = _mm_mul_pd(_mm_mul_pd(t, t), _mm_set1_pd(dInvArea));
-			// printf("vec_wndMean: %lf\n", vec_wndMean[0]);
-
-			// double wndSum2 = q0[idx2 + j] - q1[idx + j] - q2[idx2 + j] + q3[idx2 + j];
-			__m128d vec_q0 = _mm_loadu_pd(&q0[idx2 +j*blockSize]);
-			__m128d vec_q1 = _mm_loadu_pd(&q1[idx2 +j*blockSize]);
-			__m128d vec_q2 = _mm_loadu_pd(&q2[idx2 +j*blockSize]);
-			__m128d vec_q3 = _mm_loadu_pd(&q3[idx2 +j*blockSize]);
-			__m128d vec_wndSum2 = _mm_add_pd(vec_q0, vec_q3);
-			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q1);
-			vec_wndSum2 = _mm_sub_pd(vec_wndSum2, vec_q2);
-			// printf("vec_wndSum2: %lf\n", vec_wndSum2[0]);
-
-			// double diff = MAX (wndSum2 - wndMean, 0);
-			__m128d vec_diff = _mm_max_pd(_mm_sub_pd(vec_wndSum2, vec_wndMean), zeros);
-			// std::min (0.5, 10 * FLT_EPSILON * wndSum2)
-			__m128d vec_diffThresh = _mm_min_pd(_mm_set1_pd(0.5), _mm_mul_pd(_mm_set1_pd(10 * FLT_EPSILON), vec_wndSum2 ));
-
-			// printf("vec_diff: %lf\n", vec_diff[0]);
-			// printf("vec_diffThresh: %lf\n", vec_diffThresh[0]);
-
-			// double threshold = 0;
-			// if (diff <= std::min (0.5, 10 * FLT_EPSILON * wndSum2))
-			// 	threshold = 0; // avoid rounding errors
-			// else
-			// 	threshold = std::sqrt (diff)*dTemplNorm;
-
-			__m128d threshold_val_false = _mm_mul_pd(_mm_sqrt_pd(vec_diff), _mm_set1_pd(dTemplNorm));
-			__m128d vec_threshold_mask = _mm_cmple_pd(vec_diff, vec_diffThresh);
-			__m128d vec_threshold = _mm_andnot_pd(vec_threshold_mask, threshold_val_false);
-			// printf("vec_threshold: %lf\n", vec_threshold[0]);
-
-
-			// fabs (num)
-			// ( from https://stackoverflow.com/questions/5508628/how-to-absolute-2-double-or-4-floats-using-sse-instruction-set-up-to-sse4)
-			__m128d sign_mask = _mm_set1_pd(-0.f);
-			__m128d vec_num_abs = _mm_andnot_pd(sign_mask, vec_num);
-			// abs (num) < threshold
-			__m128d mask_theshold = _mm_cmplt_pd(vec_num_abs, vec_threshold);
-			// fabs (num) < threshold * 1.125
-			__m128d mask_theshold_mult = _mm_cmplt_pd(vec_num_abs, _mm_mul_pd(vec_threshold, _mm_set1_pd(1.125)));
-			//  num > 0
-			__m128d mask_gt_zero = _mm_cmpgt_pd(vec_num, zeros);
-			// num / threshold
-			__m128d vec_num_div_thresh = _mm_div_pd(vec_num, vec_threshold);
-
-
-			// if (fabs (num) < threshold)
-			// 	num /= threshold;
-			// else if (fabs (num) < threshold * 1.125)
-			// 	num = num > 0 ? 1 : -1;
-			// else
-			// 	num = 0;
-			// Not the most efficient but I do not care
-			__m128d ones = _mm_set1_pd(1.0f);
-			__m128d minus_ones = _mm_set1_pd(-1.0f);
-			vec_num = _mm_or_pd(
-				_mm_and_pd(vec_num_div_thresh,mask_theshold),
-			_mm_or_pd(
-				_mm_and_pd(ones ,_mm_andnot_pd(mask_theshold, _mm_and_pd( mask_gt_zero, mask_theshold_mult))),
-			_mm_or_pd(
-					_mm_and_pd(minus_ones ,_mm_andnot_pd(mask_theshold, _mm_andnot_pd(mask_gt_zero, mask_theshold_mult))),
-					zeros
-				)
-			));
-			__m128 result = _mm_cvtpd_ps(vec_num);
-
-			rrow[j*blockSize] = vec_num[0];
-			float myFloat = (static_cast<float>(vec_num[1]));
-			// This is a buffer overflow :)
-			rrow[j*blockSize+1] = blend(&rrow[j*blockSize+1], &myFloat , add_mask);
-		}
-	}
-}
-
 
 
 Size CMatchToolDlg::GetBestRotationSize (Size sizeSrc, Size sizeDst, double dRAngle)
